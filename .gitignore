@@ -1,0 +1,37 @@
+node_modules
+.env
+/.pnp
+.pnp.js
+/.next
+/out
+
+# testing
+/coverage
+
+# production
+/dist
+/build
+src/pages/robots.txt
+src/pages/sitemap.xml
+
+# misc
+.DS_Store
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+package-lock.json
+
+data/all-breeds.json
+data/full_dataset_csv.csv
+data/area_*_bulk_upsert*.json
+data/area_code_boundaries.geojson
+data/places/
+
+**/full_dataset_csv.csv
+**/area_650_parks.json
