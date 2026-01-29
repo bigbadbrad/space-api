@@ -21,7 +21,8 @@ IntentSignal.init(
       },
     },
     signal_type: {
-      type: DataTypes.ENUM('page_view', 'content_download', 'g2_review', 'pricing_view'),
+      // NOTE: originally an ENUM; changed to STRING to allow new signal types
+      type: DataTypes.STRING(64),
       allowNull: false,
     },
     service_lane: {

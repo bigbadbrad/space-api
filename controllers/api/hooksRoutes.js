@@ -2,6 +2,7 @@
 const router = require('express').Router();
 const { ingestPostHogEvent, verifyPostHogSignature } = require('../../services/abm.service');
 const { updateIntentScoreOnNewSignal } = require('../../services/scoring.service');
+const leadRequestsController = require('../leadRequestsController');
 
 /**
  * POST /api/hooks/posthog
@@ -71,5 +72,19 @@ router.post('/posthog', async (req, res) => {
     res.status(500).json({ message: 'Server error processing webhook' });
   }
 });
+
+// OPTIONAL: verify a shared secret header if you want (recommended)
+function verifyLeadRequestSecret(req, res, next) {
+  const expected = process.env.LEAD_REQUEST_SECRET;
+  if (!expected) return next();
+  const got = req.header('x-lead-request-secret');
+  if (got !== expected) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  next();
+}
+
+// Public ingestion endpoint for lead requests (modal submissions)
+router.post('/lead-requests', verifyLeadRequestSecret, leadRequestsController.createLeadRequest);
 
 module.exports = router;

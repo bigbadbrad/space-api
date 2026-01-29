@@ -9,6 +9,7 @@ const Contact = require('./contact');
 const ContactIdentity = require('./contact_identity');
 const AnonymousVisitor = require('./anonymous_visitor');
 const IntentSignal = require('./intent_signal');
+const LeadRequest = require('./lead_request');
 
 // -------------------------------------
 //  DEFINE MODEL RELATIONSHIPS
@@ -103,6 +104,34 @@ ProspectCompany.hasMany(IntentSignal, {
   as: 'intentSignals',
 });
 
+// LeadRequest relationships
+LeadRequest.belongsTo(ProspectCompany, {
+  foreignKey: 'prospect_company_id',
+  as: 'prospectCompany',
+});
+ProspectCompany.hasMany(LeadRequest, {
+  foreignKey: 'prospect_company_id',
+  as: 'leadRequests',
+});
+
+LeadRequest.belongsTo(Contact, {
+  foreignKey: 'contact_id',
+  as: 'contact',
+});
+Contact.hasMany(LeadRequest, {
+  foreignKey: 'contact_id',
+  as: 'leadRequests',
+});
+
+LeadRequest.belongsTo(User, {
+  foreignKey: 'routed_to_user_id',
+  as: 'routedTo',
+});
+User.hasMany(LeadRequest, {
+  foreignKey: 'routed_to_user_id',
+  as: 'routedLeadRequests',
+});
+
 module.exports = {
   User,
   ApiKey,
@@ -114,4 +143,5 @@ module.exports = {
   ContactIdentity,
   AnonymousVisitor,
   IntentSignal,
+   LeadRequest,
 };
