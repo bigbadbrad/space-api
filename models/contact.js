@@ -44,6 +44,9 @@ Contact.init(
       allowNull: false,
       defaultValue: 'new',
     },
+    // Salesforce future
+    salesforce_lead_id: { type: DataTypes.STRING(64), allowNull: true },
+    salesforce_contact_id: { type: DataTypes.STRING(64), allowNull: true },
   },
   {
     sequelize,

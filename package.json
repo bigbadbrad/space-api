@@ -7,6 +7,11 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "watch": "nodemon",
+    "migrate": "npx sequelize-cli db:migrate",
+    "migrate:undo": "npx sequelize-cli db:migrate:undo",
+    "seed:abm": "node scripts/seed-abm-defaults.js",
+    "abm:recompute": "node -e \"require('./abm/jobs/recomputeAccountIntent').runRecomputeIntentJob().then(()=>process.exit(0)).catch(e=>{console.error(e);process.exit(1)})\"",
+    "schedule:abm": "node jobs/scheduleAbmIntent.js",
     "seed": "node seeds/index.js",
     "heroku-postbuild": "npm prune --omit=dev && mkdir -p ./.cache && if [ -d /app/.cache/puppeteer ]; then mv /app/.cache/puppeteer ./.cache; fi"
   },

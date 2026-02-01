@@ -48,6 +48,20 @@ const requireInternalUser = async (req, res, next) => {
 };
 
 /**
+ * Require Internal Admin (Super User) - user must be internal + role === 'internal_admin'
+ */
+const requireInternalAdmin = async (req, res, next) => {
+  await requireInternalUser(req, res, () => {
+    if (req.user.role !== 'internal_admin') {
+      return res.status(403).json({ 
+        message: 'Access denied. Admin only.' 
+      });
+    }
+    next();
+  });
+};
+
+/**
  * Require Customer User - user must have customer_company_id IS NOT NULL
  * Also injects req.tenant_id for tenant scoping
  */
@@ -67,5 +81,6 @@ const requireCustomerUser = async (req, res, next) => {
 module.exports = {
   authenticateToken,
   requireInternalUser,
+  requireInternalAdmin,
   requireCustomerUser,
 };

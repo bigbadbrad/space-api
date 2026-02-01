@@ -33,10 +33,10 @@ LeadRequest.init(
 
     earliest_date: { type: DataTypes.DATEONLY, allowNull: true },
     latest_date: { type: DataTypes.DATEONLY, allowNull: true },
-    schedule_urgency: { type: DataTypes.STRING(64), allowNull: true },
+    schedule_urgency: { type: DataTypes.STRING(128), allowNull: true },
 
-    integration_status: { type: DataTypes.STRING(64), allowNull: true },
-    readiness_confidence: { type: DataTypes.STRING(32), allowNull: true },
+    integration_status: { type: DataTypes.STRING(128), allowNull: true },
+    readiness_confidence: { type: DataTypes.STRING(128), allowNull: true },
 
     // Organization + person fields
     organization_name: { type: DataTypes.STRING(255), allowNull: true },
@@ -85,6 +85,13 @@ LeadRequest.init(
     // Optional structured tags for triage/routing
     tags_json: { type: DataTypes.JSON, allowNull: false, defaultValue: [] },
     disposition_reason: { type: DataTypes.STRING(255), allowNull: true },
+
+    // Phase 2: account resolution + AI summary
+    account_key: { type: DataTypes.STRING(255), allowNull: true },
+    why_hot_json: { type: DataTypes.JSON, allowNull: true },
+    // Salesforce future
+    salesforce_lead_id: { type: DataTypes.STRING(64), allowNull: true },
+    salesforce_task_id: { type: DataTypes.STRING(64), allowNull: true },
 
     // Full raw payload snapshot
     payload_json: { type: DataTypes.JSON, allowNull: false },

@@ -5,15 +5,20 @@ console.log(process.env.JAWSDB_URL);
 
 module.exports = {
   development: {
-    username: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    host: "localhost",
+    username: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'space_db',
+    host: process.env.DB_HOST || '127.0.0.1',
     dialect: 'mysql',
-    port: process.env.DB_PORT || 3306 // if DB_PORT is not defined, it will default to 3306
+    port: process.env.DB_PORT || 3306,
   },
   test: {
+    username: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'space_db_test',
+    host: process.env.DB_HOST || '127.0.0.1',
     dialect: 'mysql',
+    port: process.env.DB_PORT || 3306,
   },
   production: {
     use_env_variable: "JAWSDB_URL",

@@ -10,6 +10,14 @@ const ContactIdentity = require('./contact_identity');
 const AnonymousVisitor = require('./anonymous_visitor');
 const IntentSignal = require('./intent_signal');
 const LeadRequest = require('./lead_request');
+const DailyAccountIntent = require('./daily_account_intent');
+const AccountAiSummary = require('./account_ai_summary');
+const AbmScoreConfig = require('./abm_score_config');
+const AbmScoreWeight = require('./abm_score_weight');
+const AbmEventRule = require('./abm_event_rule');
+const AbmPromptTemplate = require('./abm_prompt_template');
+const AbmAdminAuditLog = require('./abm_admin_audit_log');
+const AbmOperatorAction = require('./abm_operator_action');
 
 // -------------------------------------
 //  DEFINE MODEL RELATIONSHIPS
@@ -104,6 +112,36 @@ ProspectCompany.hasMany(IntentSignal, {
   as: 'intentSignals',
 });
 
+// DailyAccountIntent relationships
+DailyAccountIntent.belongsTo(ProspectCompany, {
+  foreignKey: 'prospect_company_id',
+  as: 'prospectCompany',
+});
+ProspectCompany.hasMany(DailyAccountIntent, {
+  foreignKey: 'prospect_company_id',
+  as: 'dailyAccountIntents',
+});
+
+// AccountAiSummary relationships
+AccountAiSummary.belongsTo(ProspectCompany, {
+  foreignKey: 'prospect_company_id',
+  as: 'prospectCompany',
+});
+ProspectCompany.hasMany(AccountAiSummary, {
+  foreignKey: 'prospect_company_id',
+  as: 'accountAiSummaries',
+});
+
+// Registry: AbmScoreConfig + AbmScoreWeight
+AbmScoreConfig.hasMany(AbmScoreWeight, {
+  foreignKey: 'score_config_id',
+  as: 'weights',
+});
+AbmScoreWeight.belongsTo(AbmScoreConfig, {
+  foreignKey: 'score_config_id',
+  as: 'scoreConfig',
+});
+
 // LeadRequest relationships
 LeadRequest.belongsTo(ProspectCompany, {
   foreignKey: 'prospect_company_id',
@@ -132,6 +170,13 @@ User.hasMany(LeadRequest, {
   as: 'routedLeadRequests',
 });
 
+AbmOperatorAction.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
+User.hasMany(AbmOperatorAction, { foreignKey: 'user_id', as: 'operatorActions' });
+AbmOperatorAction.belongsTo(ProspectCompany, { foreignKey: 'prospect_company_id', as: 'prospectCompany' });
+ProspectCompany.hasMany(AbmOperatorAction, { foreignKey: 'prospect_company_id', as: 'operatorActions' });
+AbmOperatorAction.belongsTo(LeadRequest, { foreignKey: 'lead_request_id', as: 'leadRequest' });
+LeadRequest.hasMany(AbmOperatorAction, { foreignKey: 'lead_request_id', as: 'operatorActions' });
+
 module.exports = {
   User,
   ApiKey,
@@ -143,5 +188,13 @@ module.exports = {
   ContactIdentity,
   AnonymousVisitor,
   IntentSignal,
-   LeadRequest,
+  DailyAccountIntent,
+  AccountAiSummary,
+  AbmScoreConfig,
+  AbmScoreWeight,
+  AbmEventRule,
+  AbmPromptTemplate,
+  AbmAdminAuditLog,
+  AbmOperatorAction,
+  LeadRequest,
 };

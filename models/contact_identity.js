@@ -21,8 +21,9 @@ ContactIdentity.init(
       },
     },
     identity_type: {
-      type: DataTypes.ENUM('posthog_distinct_id', 'email', 'crm_id', 'cookie_id'),
+      type: DataTypes.STRING(64),
       allowNull: false,
+      // posthog_distinct_id | email | hashed_email | crm_id | cookie_id
     },
     identity_value: {
       type: DataTypes.STRING,

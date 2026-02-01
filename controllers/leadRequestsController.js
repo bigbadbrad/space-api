@@ -1,6 +1,7 @@
 'use strict';
 
 const { resolveCompanyDomain, computeLeadScore } = require('../utils/leadRequests');
+const { resolveAccountKey } = require('../utils/domain');
 const {
   ProspectCompany,
   Contact,
@@ -28,6 +29,32 @@ function pickTracking(tracking) {
     tracking_client_id: t.client_id || null,
     posthog_distinct_id: t.posthog_distinct_id || null,
   };
+}
+
+/**
+ * Derive mission_type: use payload value, or fall back to service_needed (e.g. Refuel → "Refuel")
+ * so we have a meaningful value even when the form doesn't ask for mission_type.
+ */
+function resolveMissionType(payload) {
+  const mt = payload.mission_type?.trim();
+  if (mt) return mt;
+  const svc = payload.service_needed;
+  if (!svc) return null;
+  const labels = { refuel: 'Refuel', docking: 'Docking', upgrade: 'Upgrade', disposal: 'Disposal', launch: 'Launch', insertion_post_launch: 'Insertion', transfer_on_orbit: 'Transfer', unsure: 'Unsure' };
+  return labels[svc] || svc;
+}
+
+/**
+ * Derive target_orbit: use payload value, or for on-orbit services use current_orbit or desired_orbit.
+ */
+function resolveTargetOrbit(payload) {
+  const to = payload.target_orbit?.trim();
+  if (to) return to;
+  const co = payload.current_orbit?.trim();
+  if (co) return co;
+  const dor = payload.desired_orbit?.trim();
+  if (dor) return dor;
+  return null;
 }
 
 async function upsertProspectCompany(payload, domain) {
@@ -170,9 +197,10 @@ module.exports = {
     if (err) return res.status(400).json({ ok: false, error: err });
 
     const domain = resolveCompanyDomain(payload);
+    const accountKey = resolveAccountKey(payload);
     const leadScore = computeLeadScore(payload);
 
-    const company = await upsertProspectCompany(payload, domain);
+    const company = await upsertProspectCompany(payload, accountKey);
     const contact = await upsertContact(payload, company ? company.id : null);
 
     const leadRequest = await LeadRequest.create({
@@ -180,9 +208,9 @@ module.exports = {
       contact_id: contact ? contact.id : null,
 
       service_needed: payload.service_needed,
-      mission_type: payload.mission_type || null,
+      mission_type: resolveMissionType(payload),
 
-      target_orbit: payload.target_orbit || null,
+      target_orbit: resolveTargetOrbit(payload),
       inclination_deg: payload.inclination_deg ?? null,
       payload_mass_kg: payload.payload_mass_kg ?? null,
       payload_volume: payload.payload_volume || null,
@@ -219,6 +247,7 @@ module.exports = {
 
       lead_score: leadScore,
       routing_status: 'new',
+      account_key: accountKey,
 
       payload_json: payload,
     });

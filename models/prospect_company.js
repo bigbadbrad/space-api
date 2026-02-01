@@ -47,6 +47,18 @@ ProspectCompany.init(
         key: 'id',
       },
     },
+    // Phase 2: decayed scoring + surge
+    intent_stage: { type: DataTypes.STRING(32), allowNull: true },
+    surge_level: { type: DataTypes.STRING(32), allowNull: true },
+    top_lane: { type: DataTypes.STRING(64), allowNull: true },
+    last_seen_at: { type: DataTypes.DATE, allowNull: true },
+    score_updated_at: { type: DataTypes.DATE, allowNull: true },
+    score_7d_raw: { type: DataTypes.FLOAT, allowNull: true },
+    score_30d_raw: { type: DataTypes.FLOAT, allowNull: true },
+    // Salesforce future
+    salesforce_account_id: { type: DataTypes.STRING(64), allowNull: true },
+    salesforce_account_url: { type: DataTypes.STRING(512), allowNull: true },
+    salesforce_owner_id: { type: DataTypes.STRING(64), allowNull: true },
   },
   {
     sequelize,
