@@ -245,4 +245,102 @@ async function runRecomputeIntentJob() {
   return { accountsProcessed: Object.keys(byAccount).length };
 }
 
-module.exports = { runRecomputeIntentJob };
+/**
+ * Real-time: Recompute intent for a single account (e.g. when a lead request comes in).
+ * Uses intent_signals only (no PostHog) for speed. Upserts daily_account_intent for today.
+ */
+async function recomputeAccountIntentForProspect(prospectCompanyId) {
+  const prospect = await ProspectCompany.findByPk(prospectCompanyId);
+  if (!prospect) return;
+
+  const config = await registry.getActiveScoreConfig();
+  if (!config) return;
+
+  const weightsMap = await registry.getWeightsMap(config.id);
+  const configJson = config.toJSON ? config.toJSON() : config;
+
+  const since = new Date();
+  since.setDate(since.getDate() - 30);
+  const signals = await IntentSignal.findAll({
+    where: {
+      prospect_company_id: prospectCompanyId,
+      occurred_at: { [Op.gte]: since },
+    },
+  });
+
+  const now = Date.now();
+  const events = signals.map((s) => {
+    const ageDays = (now - new Date(s.occurred_at)) / (24 * 60 * 60 * 1000);
+    return {
+      event_name: s.signal_type || 'page_view',
+      content_type: s.topic || 'other',
+      lane: s.service_lane || 'other',
+      weight: s.weight || 1,
+      ageDays,
+      timestamp: s.occurred_at,
+    };
+  });
+
+  const events7d = events.filter((e) => e.ageDays < 7);
+  const eventsPrev7d = events.filter((e) => e.ageDays >= 7 && e.ageDays < 14);
+  const events30d = events.filter((e) => e.ageDays < 30);
+
+  const keyEventsCounts = computeKeyEventsCounts(events7d);
+  const resolveWeight = (e) =>
+    e.weight_override ?? e.weight ?? scoring.getWeight(weightsMap, e.event_name, e.content_type, e.cta_id);
+  const events7dWithWeight = events7d.map((e) => ({ ...e, weight: resolveWeight(e) }));
+  const eventsPrev7dWithWeight = eventsPrev7d.map((e) => ({ ...e, weight: resolveWeight(e) }));
+  const events30dWithWeight = events30d.map((e) => ({ ...e, weight: resolveWeight(e) }));
+
+  const result = scoring.computeFullScore({
+    weightsMap,
+    config: configJson,
+    events7d: events7dWithWeight,
+    eventsPrev7d: eventsPrev7dWithWeight,
+    events30d: events30dWithWeight,
+    keyEventsCounts,
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  let dai = await DailyAccountIntent.findOne({
+    where: { prospect_company_id: prospect.id, date: today },
+  });
+  const daiData = {
+    score_config_id: config.id,
+    raw_score_7d: result.raw_7d,
+    raw_score_prev_7d: result.raw_prev_7d,
+    raw_score_30d: result.raw_30d,
+    intent_score: result.intent_score,
+    intent_stage: result.intent_stage,
+    surge_ratio: result.surge_ratio,
+    surge_level: result.surge_level,
+    unique_people_7d: events7d.length,
+    top_lane: result.top_lane,
+    lane_scores_7d_json: result.lane_scores_7d_json,
+    lane_scores_30d_json: result.lane_scores_30d_json,
+    key_events_7d_json: keyEventsCounts,
+    top_categories_7d_json: keyEventsCounts,
+  };
+  if (dai) {
+    await dai.update(daiData);
+  } else {
+    await DailyAccountIntent.create({
+      prospect_company_id: prospect.id,
+      date: today,
+      ...daiData,
+    });
+  }
+
+  await prospect.update({
+    intent_score: result.intent_score,
+    intent_stage: result.intent_stage,
+    surge_level: result.surge_level,
+    top_lane: result.top_lane,
+    last_seen_at: events.length ? new Date(Math.max(...events.map((e) => new Date(e.timestamp)))) : null,
+    score_updated_at: new Date(),
+    score_7d_raw: result.raw_7d,
+    score_30d_raw: result.raw_30d,
+  });
+}
+
+module.exports = { runRecomputeIntentJob, recomputeAccountIntentForProspect };

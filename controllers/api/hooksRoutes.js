@@ -2,6 +2,7 @@
 const router = require('express').Router();
 const { ingestPostHogEvent, verifyPostHogSignature } = require('../../services/abm.service');
 const { updateIntentScoreOnNewSignal } = require('../../services/scoring.service');
+const { recomputeAccountIntentForProspect } = require('../../abm/jobs/recomputeAccountIntent');
 const leadRequestsController = require('../leadRequestsController');
 
 /**
@@ -52,6 +53,9 @@ router.post('/posthog', async (req, res) => {
           // Update intent score asynchronously (don't wait)
           updateIntentScoreOnNewSignal(signal.prospect_company_id)
             .catch(err => console.error('Error updating intent score:', err));
+          // Real-time dashboard: update daily_account_intent so account shows immediately
+          recomputeAccountIntentForProspect(signal.prospect_company_id)
+            .catch(err => console.warn('Real-time ABM update failed:', err?.message || err));
 
           results.push({ success: true, signal_id: signal.id });
         } else {

@@ -9,6 +9,7 @@ const {
   IntentSignal,
   LeadRequest,
 } = require('../models');
+const { recomputeAccountIntentForProspect } = require('../abm/jobs/recomputeAccountIntent');
 const { Op } = require('sequelize');
 
 function pickUtm(utm) {
@@ -255,6 +256,11 @@ module.exports = {
     if (company) {
       await createIntentSignals(company.id, payload, leadScore);
       await recomputeCompanyIntentScore(company.id);
+      try {
+        await recomputeAccountIntentForProspect(company.id);
+      } catch (err) {
+        console.warn('Real-time ABM update failed (dashboard may show on next batch):', err?.message || err);
+      }
     }
 
     return res.status(201).json({
