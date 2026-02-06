@@ -85,8 +85,20 @@ async function upsertProspectCompany(payload, domain) {
   return company;
 }
 
+/**
+ * Normalize email: fix common typos (e.g. @@ → @) so Contact.isEmail validation passes.
+ */
+function normalizeEmail(email) {
+  if (!email || typeof email !== 'string') return null;
+  let s = email.trim().toLowerCase();
+  if (!s) return null;
+  // Fix double @ (common typo)
+  while (s.includes('@@')) s = s.replace(/@@/g, '@');
+  return s || null;
+}
+
 async function upsertContact(payload, prospectCompanyId) {
-  const email = payload.work_email || null;
+  const email = normalizeEmail(payload.work_email);
   if (!email || !prospectCompanyId) return null;
 
   const [contact] = await Contact.findOrCreate({
@@ -226,7 +238,7 @@ module.exports = {
       organization_name: payload.organization_name || null,
       organization_website: payload.organization_website || null,
       role: payload.role || null,
-      work_email: payload.work_email || null,
+      work_email: normalizeEmail(payload.work_email) || null,
       country: payload.country || null,
 
       funding_status: payload.funding_status || null,

@@ -51,13 +51,25 @@ router.get('/summary', requireInternalUser, async (req, res) => {
       ],
     };
 
+    const hotPcIds = await DailyAccountIntent.findAll({
+      where: { date: today(), intent_stage: 'Hot' },
+      attributes: ['prospect_company_id'],
+      raw: true,
+    }).then((rows) => rows.map((r) => r.prospect_company_id).filter(Boolean));
+
+    const whereHot = {
+      ...whereActive,
+      [Op.or]: [
+        { confidence: { [Op.gte]: 0.75 } },
+        ...(hotPcIds.length ? [{ prospect_company_id: { [Op.in]: hotPcIds } }] : []),
+      ],
+    };
+
     const [activeCount, dueSoonCount, staleCount, hotCount] = await Promise.all([
       Mission.count({ where: whereActive }),
       Mission.count({ where: whereDueSoon }),
       Mission.count({ where: whereStale }),
-      Mission.count({
-        where: { ...whereActive, confidence: { [Op.gte]: 0.75 } },
-      }),
+      Mission.count({ where: whereHot }),
     ]);
 
     const byStage = await Mission.findAll({
@@ -111,6 +123,7 @@ router.get('/', requireInternalUser, async (req, res) => {
       limit = 50,
       due_soon,
       stale,
+      hot,
     } = req.query;
 
     const where = {};
@@ -139,6 +152,20 @@ router.get('/', requireInternalUser, async (req, res) => {
         { last_activity_at: { [Op.lt]: staleCutoff } },
         { last_activity_at: null },
       ];
+    }
+    if (hot === 'true') {
+      const hotPcIds = await DailyAccountIntent.findAll({
+        where: { date: today(), intent_stage: 'Hot' },
+        attributes: ['prospect_company_id'],
+        raw: true,
+      }).then((rows) => rows.map((r) => r.prospect_company_id).filter(Boolean));
+      where[Op.and] = where[Op.and] || [];
+      where[Op.and].push({
+        [Op.or]: [
+          { confidence: { [Op.gte]: 0.75 } },
+          ...(hotPcIds.length ? [{ prospect_company_id: { [Op.in]: hotPcIds } }] : []),
+        ],
+      });
     }
 
     if (search) {
