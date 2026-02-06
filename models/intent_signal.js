@@ -44,6 +44,10 @@ IntentSignal.init(
       allowNull: false,
       defaultValue: DataTypes.NOW,
     },
+    mission_id: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
   },
   {
     sequelize,

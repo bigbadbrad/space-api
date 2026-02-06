@@ -21,6 +21,10 @@ LeadRequest.init(
       type: DataTypes.UUID,
       allowNull: true,
     },
+    mission_id: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
 
     // Request core
     service_needed: { type: DataTypes.STRING(64), allowNull: false },

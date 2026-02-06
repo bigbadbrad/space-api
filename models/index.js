@@ -18,6 +18,11 @@ const AbmEventRule = require('./abm_event_rule');
 const AbmPromptTemplate = require('./abm_prompt_template');
 const AbmAdminAuditLog = require('./abm_admin_audit_log');
 const AbmOperatorAction = require('./abm_operator_action');
+const Mission = require('./mission');
+const MissionContact = require('./mission_contact');
+const MissionArtifact = require('./mission_artifact');
+const MissionActivity = require('./mission_activity');
+const AbmMissionTemplate = require('./abm_mission_template');
 
 // -------------------------------------
 //  DEFINE MODEL RELATIONSHIPS
@@ -177,6 +182,29 @@ ProspectCompany.hasMany(AbmOperatorAction, { foreignKey: 'prospect_company_id', 
 AbmOperatorAction.belongsTo(LeadRequest, { foreignKey: 'lead_request_id', as: 'leadRequest' });
 LeadRequest.hasMany(AbmOperatorAction, { foreignKey: 'lead_request_id', as: 'operatorActions' });
 
+// Mission relationships
+Mission.belongsTo(ProspectCompany, { foreignKey: 'prospect_company_id', as: 'prospectCompany' });
+ProspectCompany.hasMany(Mission, { foreignKey: 'prospect_company_id', as: 'missions' });
+Mission.belongsTo(Contact, { foreignKey: 'primary_contact_id', as: 'primaryContact' });
+Contact.hasMany(Mission, { foreignKey: 'primary_contact_id', as: 'primaryMissions' });
+Mission.belongsTo(LeadRequest, { foreignKey: 'lead_request_id', as: 'leadRequest' });
+LeadRequest.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.hasOne(LeadRequest, { foreignKey: 'mission_id', as: 'linkedLeadRequest' });
+Mission.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
+User.hasMany(Mission, { foreignKey: 'owner_user_id', as: 'ownedMissions' });
+Mission.hasMany(MissionArtifact, { foreignKey: 'mission_id', as: 'artifacts' });
+MissionArtifact.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.hasMany(MissionActivity, { foreignKey: 'mission_id', as: 'activities' });
+MissionActivity.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.belongsToMany(Contact, { through: MissionContact, foreignKey: 'mission_id', otherKey: 'contact_id', as: 'contacts' });
+Contact.belongsToMany(Mission, { through: MissionContact, foreignKey: 'contact_id', otherKey: 'mission_id', as: 'missions' });
+MissionContact.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+MissionContact.belongsTo(Contact, { foreignKey: 'contact_id', as: 'contact' });
+MissionArtifact.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdBy' });
+MissionActivity.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdBy' });
+IntentSignal.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.hasMany(IntentSignal, { foreignKey: 'mission_id', as: 'intentSignals' });
+
 module.exports = {
   User,
   ApiKey,
@@ -197,4 +225,9 @@ module.exports = {
   AbmAdminAuditLog,
   AbmOperatorAction,
   LeadRequest,
+  Mission,
+  MissionContact,
+  MissionArtifact,
+  MissionActivity,
+  AbmMissionTemplate,
 };

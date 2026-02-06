@@ -14,6 +14,9 @@ const {
   AbmEventRule,
   AbmPromptTemplate,
   AbmOperatorAction,
+  Mission,
+  MissionActivity,
+  AbmMissionTemplate,
 } = require('../../models');
 const { Op } = require('sequelize');
 const { updateIntentScore } = require('../../services/scoring.service');
@@ -279,6 +282,16 @@ router.get('/activity', requireInternalUser, async (req, res) => {
       ],
     });
 
+    // Include lead requests that may not have intent signals (e.g. when prospect_company was null)
+    const leadRequests = await LeadRequest.findAll({
+      where: { created_at: { [Op.gte]: cutoff } },
+      order: [['created_at', 'DESC']],
+      limit: Math.min(parseInt(limit) || 200, 500),
+      include: [
+        { model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'], required: false },
+      ],
+    });
+
     const eventsToday = await IntentSignal.count({
       where: { occurred_at: { [Op.gte]: todayStart } },
     });
@@ -319,7 +332,7 @@ router.get('/activity', requireInternalUser, async (req, res) => {
       .slice(0, 10)
       .map(([name, score]) => ({ name, score }));
 
-    const feed = signals.map((s) => ({
+    const signalFeed = signals.map((s) => ({
       id: s.id,
       time: s.occurred_at,
       account_id: s.prospectCompany?.id,
@@ -331,6 +344,33 @@ router.get('/activity', requireInternalUser, async (req, res) => {
       weight: s.weight,
       link: null,
     }));
+
+    // Add lead requests that have no matching lead_submitted intent signal (e.g. prospect_company was null)
+    const hasLeadSubmittedSignal = (pcId, createdAt) =>
+      signals.some(
+        (s) =>
+          s.signal_type === 'lead_submitted' &&
+          String(s.prospect_company_id) === String(pcId) &&
+          Math.abs(new Date(s.occurred_at) - new Date(createdAt)) < 120000
+      );
+    const lrFeed = leadRequests
+      .filter((lr) => !hasLeadSubmittedSignal(lr.prospect_company_id, lr.created_at))
+      .map((lr) => ({
+        id: `lr-${lr.id}`,
+        time: lr.created_at,
+        account_id: lr.prospectCompany?.id,
+        account_name: lr.prospectCompany?.name || lr.organization_name,
+        account_domain: lr.prospectCompany?.domain || lr.organization_website,
+        person: null,
+        activity_type: 'lead_submitted',
+        lane: lr.service_needed || null,
+        weight: lr.lead_score || 50,
+        link: `/dashboard/lead-requests?id=${lr.id}`,
+      }));
+
+    const feed = [...signalFeed, ...lrFeed]
+      .sort((a, b) => new Date(b.time) - new Date(a.time))
+      .slice(0, Math.min(parseInt(limit) || 200, 500));
 
     res.json({
       kpis: {
@@ -479,8 +519,9 @@ router.get('/queue', requireInternalUser, async (req, res) => {
     const outboundLrCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
     const items = [];
+    const now = new Date();
 
-    const [daiToday, daiYesterday, leadRequestsRecent, allOperatorActions] = await Promise.all([
+    const [daiToday, daiYesterday, leadRequestsRecent, allOperatorActions, missionsDue, missionsStale, missionsNewFromLr] = await Promise.all([
       DailyAccountIntent.findAll({
         where: { date: dateStr },
         include: [{ model: ProspectCompany, as: 'prospectCompany', required: true }],
@@ -499,9 +540,36 @@ router.get('/queue', requireInternalUser, async (req, res) => {
         where: { created_at: { [Op.gte]: staleCutoff } },
         attributes: ['prospect_company_id', 'lead_request_id', 'action_type', 'created_at', 'snooze_until'],
       }),
+      Mission.findAll({
+        where: {
+          stage: { [Op.notIn]: ['won', 'lost', 'on_hold'] },
+          next_step_due_at: {
+            [Op.gte]: now,
+            [Op.lte]: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+          },
+        },
+        include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'], required: false }],
+        limit: 20,
+      }),
+      Mission.findAll({
+        where: {
+          stage: { [Op.notIn]: ['won', 'lost', 'on_hold'] },
+          [Op.or]: [
+            { last_activity_at: { [Op.lt]: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) } },
+            { last_activity_at: null },
+          ],
+        },
+        include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'], required: false }],
+        limit: 20,
+      }),
+      Mission.findAll({
+        where: { source: 'lead_request', created_at: { [Op.gte]: cutoff } },
+        include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'], required: false }],
+        order: [['created_at', 'DESC']],
+        limit: 10,
+      }),
     ]);
 
-    const now = new Date();
     const snoozedPcIds = new Set();
     const snoozedLrIds = new Set();
     for (const a of allOperatorActions || []) {
@@ -627,6 +695,37 @@ router.get('/queue', requireInternalUser, async (req, res) => {
           });
         }
       }
+    }
+
+    for (const m of missionsDue || []) {
+      items.push({
+        type: 'mission_due',
+        mission_id: m.id,
+        prospect_company_id: m.prospect_company_id,
+        org_name: m.prospectCompany?.name || m.prospectCompany?.domain || '—',
+        title: m.title,
+        next_step_due_at: m.next_step_due_at,
+      });
+    }
+    for (const m of missionsStale || []) {
+      items.push({
+        type: 'mission_stale',
+        mission_id: m.id,
+        prospect_company_id: m.prospect_company_id,
+        org_name: m.prospectCompany?.name || m.prospectCompany?.domain || '—',
+        title: m.title,
+        last_activity_at: m.last_activity_at,
+      });
+    }
+    for (const m of missionsNewFromLr || []) {
+      items.push({
+        type: 'mission_new',
+        mission_id: m.id,
+        prospect_company_id: m.prospect_company_id,
+        org_name: m.prospectCompany?.name || m.prospectCompany?.domain || '—',
+        title: m.title,
+        created_at: m.created_at,
+      });
     }
 
     res.json({
@@ -1565,6 +1664,84 @@ router.post('/accounts/:id/ai-summary', requireInternalUser, async (req, res) =>
   }
 });
 
+// Missions (ABM Rev 2)
+const missionsRoutes = require('./missionsRoutes');
+router.use('/missions', missionsRoutes);
+
+/**
+ * POST /api/abm/lead-requests/:id/promote
+ * Promote lead request to mission
+ */
+router.post('/lead-requests/:id/promote', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, owner_user_id, priority } = req.body;
+    const lr = await LeadRequest.findByPk(id, {
+      include: [{ model: ProspectCompany, as: 'prospectCompany' }, { model: Contact, as: 'contact' }],
+    });
+    if (!lr) return res.status(404).json({ message: 'Lead request not found' });
+
+    const defaultTitle = title || `${lr.service_needed || 'Mission'} — ${lr.organization_name || lr.prospectCompany?.name || 'Unknown'}`;
+    const ownerId = owner_user_id || req.user?.id;
+    if (!ownerId) return res.status(400).json({ message: 'owner_user_id or current user required' });
+
+    const mission = await Mission.create({
+      title: defaultTitle,
+      service_lane: lr.service_needed || 'other',
+      owner_user_id: ownerId,
+      source: 'lead_request',
+      prospect_company_id: lr.prospect_company_id,
+      primary_contact_id: lr.contact_id,
+      lead_request_id: lr.id,
+      mission_type: lr.mission_type,
+      target_orbit: lr.target_orbit,
+      inclination_deg: lr.inclination_deg,
+      payload_mass_kg: lr.payload_mass_kg,
+      payload_volume: lr.payload_volume,
+      earliest_date: lr.earliest_date,
+      latest_date: lr.latest_date,
+      schedule_urgency: lr.schedule_urgency,
+      integration_status: lr.integration_status,
+      readiness_confidence: lr.readiness_confidence,
+      funding_status: lr.funding_status,
+      budget_band: lr.budget_band,
+      stage: 'new',
+      priority: priority || 'medium',
+      confidence: 0.7,
+      last_activity_at: new Date(),
+    });
+
+    await lr.update({ mission_id: mission.id });
+    await MissionActivity.create({
+      mission_id: mission.id,
+      type: 'linked_lead_request',
+      body: 'Promoted from lead request',
+      meta_json: { lead_request_id: lr.id },
+      created_by_user_id: req.user?.id,
+    });
+    await MissionActivity.create({
+      mission_id: mission.id,
+      type: 'note',
+      body: 'Procurement brief attached',
+      created_by_user_id: req.user?.id,
+    });
+
+    const full = await Mission.findByPk(mission.id, {
+      include: [
+        { model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'] },
+        { model: User, as: 'owner', attributes: ['id', 'name', 'preferred_name', 'email'] },
+        { model: Contact, as: 'primaryContact', attributes: ['id', 'email', 'first_name', 'last_name', 'title'] },
+        { model: LeadRequest, as: 'leadRequest', attributes: ['id', 'organization_name', 'service_needed', 'created_at'] },
+      ],
+    });
+
+    res.status(201).json({ mission: full, message: 'Promoted to mission' });
+  } catch (err) {
+    console.error('Error promoting lead request:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 /**
  * POST /api/abm/jobs/recompute-intent
  * Manual trigger for ABM intent recompute job (internal only)
@@ -1756,6 +1933,61 @@ router.patch('/admin/prompt-templates/:id', requireInternalAdmin, async (req, re
     res.json({ template: t.toJSON() });
   } catch (err) {
     res.status(500).json({ message: err.message || 'Failed to update template' });
+  }
+});
+
+// Mission Templates (ABM Rev 2)
+router.get('/admin/mission-templates', requireInternalAdmin, async (req, res) => {
+  try {
+    const templates = await AbmMissionTemplate.findAll({ order: [['lane', 'ASC'], ['template_name', 'ASC']] });
+    res.json({ templates: templates.map((t) => t.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch mission templates' });
+  }
+});
+
+router.post('/admin/mission-templates', requireInternalAdmin, async (req, res) => {
+  try {
+    const { lane, template_name, default_title_pattern, default_fields_json, enabled } = req.body;
+    if (!lane || !template_name) return res.status(400).json({ message: 'lane and template_name are required' });
+    const t = await AbmMissionTemplate.create({
+      lane,
+      template_name,
+      default_title_pattern: default_title_pattern || null,
+      default_fields_json: default_fields_json || null,
+      enabled: enabled !== false,
+    });
+    res.status(201).json({ template: t.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to create mission template' });
+  }
+});
+
+router.patch('/admin/mission-templates/:id', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = {};
+    const allowed = ['lane', 'template_name', 'default_title_pattern', 'default_fields_json', 'enabled'];
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    }
+    const [n] = await AbmMissionTemplate.update(updates, { where: { id } });
+    if (!n) return res.status(404).json({ message: 'Mission template not found' });
+    const t = await AbmMissionTemplate.findByPk(id);
+    res.json({ template: t.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to update mission template' });
+  }
+});
+
+router.delete('/admin/mission-templates/:id', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const n = await AbmMissionTemplate.destroy({ where: { id } });
+    if (!n) return res.status(404).json({ message: 'Mission template not found' });
+    res.json({ message: 'Deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to delete mission template' });
   }
 });
 
