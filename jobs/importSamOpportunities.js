@@ -179,13 +179,16 @@ async function runImport() {
         const classification = await classifyProgram(payload);
         payload.service_lane = classification.service_lane ?? payload.service_lane;
         payload.topic = classification.topic ?? payload.topic;
-        payload.relevance_score = classification.relevance_score ?? 0;
+        // Min score 40 so SAM opportunities show in default "Relevant" view (threshold 35)
+        payload.relevance_score = Math.max(classification.relevance_score ?? 0, 40);
         payload.match_confidence = classification.match_confidence ?? 0;
-        payload.match_reasons_json = classification.match_reasons_json ?? null;
+        payload.match_reasons_json = classification.match_reasons_json?.length
+          ? classification.match_reasons_json
+          : [{ type: 'source', label: 'SAM.gov opportunity' }];
         payload.classification_version = classification.classification_version ?? 'v1';
         payload.suppressed = classification.suppressed ?? false;
         payload.suppressed_reason = classification.suppressed_reason ?? null;
-        payload.weight_override = classification.suppressed ? 0 : Math.max(1, Math.round((classification.relevance_score || 0) / 10));
+        payload.weight_override = classification.suppressed ? 0 : Math.max(1, Math.round((payload.relevance_score || 0) / 10));
 
         const [program] = await ProcurementProgram.upsert(
           { ...payload, updated_at: new Date() },
