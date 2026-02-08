@@ -2,6 +2,7 @@
 const express = require("express");
 const routes = require("./controllers");
 const cors = require("cors");
+const cron = require("node-cron");
 const http = require('http');
 const { initWebSocketServer } = require('./websocket'); // Import WebSocket init function
 const sequelize = require("./config/connection");
@@ -26,8 +27,14 @@ const server = http.createServer(app);
 // Initialize WebSocket server after creating the HTTP server
 initWebSocketServer(server); // This initializes the WebSocket server
 
-sequelize.sync({ force: false }).then(() => {
+sequelize.sync({ force: false, alter: false }).then(() => {
   server.listen(PORT, () => {
     console.log(`App listening on port ${PORT}!`);
+  });
+
+  // Daily procurement ingests at 2am UTC (Sprint 2: SAM + USAspending + SpaceWERX)
+  cron.schedule('0 2 * * *', () => {
+    const { runProcurementIngests } = require('./jobs/scheduleProcurement');
+    runProcurementIngests().catch((e) => console.error('Procurement ingests failed:', e));
   });
 });

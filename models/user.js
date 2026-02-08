@@ -26,20 +26,20 @@ User.init(
       allowNull: true,
     },
     // For phone-based signups / notifications (KEEPING AS PRIMARY LOGIN)
+    // Note: unique omitted to avoid "Too many keys" error when users table has many indexes
     phone: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
       validate: {
         // e.g., must be digits only
         is: /^[0-9]{10,15}$/,
       },
     },
     // Standard email
+    // Note: unique omitted to avoid "Too many keys" error when users table has many indexes
     email: {
       type: DataTypes.STRING,
       allowNull: true,
-      unique: true,
       validate: {
         isEmail: true,
       },

@@ -23,6 +23,21 @@ const MissionContact = require('./mission_contact');
 const MissionArtifact = require('./mission_artifact');
 const MissionActivity = require('./mission_activity');
 const AbmMissionTemplate = require('./abm_mission_template');
+const ProcurementProgram = require('./procurement_program');
+const ProgramAccountLink = require('./program_account_link');
+const ProgramMissionLink = require('./program_mission_link');
+const ProcurementImportRun = require('./procurement_import_run');
+const AbmTopicRule = require('./abm_topic_rule');
+const AbmSourceWeight = require('./abm_source_weight');
+const AbmProgramRule = require('./abm_program_rule');
+const AbmProgramSuppressionRule = require('./abm_program_suppression_rule');
+const AbmLaneDefinition = require('./abm_lane_definition');
+const AbmAgencyBlacklist = require('./abm_agency_blacklist');
+const ProcurementProgramNote = require('./procurement_program_note');
+const ProgramItem = require('./program_item');
+const ProgramItemNote = require('./program_item_note');
+const ProgramItemAccountLink = require('./program_item_account_link');
+const ProgramItemMissionLink = require('./program_item_mission_link');
 
 // -------------------------------------
 //  DEFINE MODEL RELATIONSHIPS
@@ -205,6 +220,70 @@ MissionActivity.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'created
 IntentSignal.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
 Mission.hasMany(IntentSignal, { foreignKey: 'mission_id', as: 'intentSignals' });
 
+// Procurement Radar (ABM Rev 3)
+ProcurementProgram.hasMany(ProgramAccountLink, { foreignKey: 'procurement_program_id', as: 'accountLinks' });
+ProgramAccountLink.belongsTo(ProcurementProgram, { foreignKey: 'procurement_program_id', as: 'procurementProgram' });
+ProgramAccountLink.belongsTo(ProspectCompany, { foreignKey: 'prospect_company_id', as: 'prospectCompany' });
+ProspectCompany.hasMany(ProgramAccountLink, { foreignKey: 'prospect_company_id', as: 'programAccountLinks' });
+ProgramAccountLink.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdBy' });
+
+ProcurementProgram.hasMany(ProgramMissionLink, { foreignKey: 'procurement_program_id', as: 'missionLinks' });
+ProgramMissionLink.belongsTo(ProcurementProgram, { foreignKey: 'procurement_program_id', as: 'procurementProgram' });
+ProgramMissionLink.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.hasMany(ProgramMissionLink, { foreignKey: 'mission_id', as: 'programLinks' });
+ProgramMissionLink.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdBy' });
+
+ProcurementProgram.belongsToMany(ProspectCompany, {
+  through: ProgramAccountLink,
+  foreignKey: 'procurement_program_id',
+  otherKey: 'prospect_company_id',
+  as: 'linkedAccounts',
+});
+ProspectCompany.belongsToMany(ProcurementProgram, {
+  through: ProgramAccountLink,
+  foreignKey: 'prospect_company_id',
+  otherKey: 'procurement_program_id',
+  as: 'linkedPrograms',
+});
+
+ProcurementProgram.belongsToMany(Mission, {
+  through: ProgramMissionLink,
+  foreignKey: 'procurement_program_id',
+  otherKey: 'mission_id',
+  as: 'linkedMissions',
+});
+Mission.belongsToMany(ProcurementProgram, {
+  through: ProgramMissionLink,
+  foreignKey: 'mission_id',
+  otherKey: 'procurement_program_id',
+  as: 'linkedPrograms',
+});
+
+ProcurementProgram.hasMany(ProcurementProgramNote, { foreignKey: 'procurement_program_id', as: 'notes' });
+ProcurementProgramNote.belongsTo(ProcurementProgram, { foreignKey: 'procurement_program_id', as: 'procurementProgram' });
+ProcurementProgramNote.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
+User.hasMany(ProcurementProgramNote, { foreignKey: 'user_id', as: 'programNotes' });
+ProcurementProgram.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
+User.hasMany(ProcurementProgram, { foreignKey: 'owner_user_id', as: 'ownedPrograms' });
+
+// Program Items (Sprint 2: unified SAM + USAspending + SpaceWERX)
+ProgramItem.hasMany(ProgramItemNote, { foreignKey: 'program_item_id', as: 'notes' });
+ProgramItemNote.belongsTo(ProgramItem, { foreignKey: 'program_item_id', as: 'programItem' });
+ProgramItemNote.belongsTo(User, { foreignKey: 'user_id', as: 'user' });
+User.hasMany(ProgramItemNote, { foreignKey: 'user_id', as: 'programItemNotes' });
+ProgramItem.hasMany(ProgramItemAccountLink, { foreignKey: 'program_item_id', as: 'accountLinks' });
+ProgramItemAccountLink.belongsTo(ProgramItem, { foreignKey: 'program_item_id', as: 'programItem' });
+ProgramItemAccountLink.belongsTo(ProspectCompany, { foreignKey: 'prospect_company_id', as: 'prospectCompany' });
+ProspectCompany.hasMany(ProgramItemAccountLink, { foreignKey: 'prospect_company_id', as: 'programItemAccountLinks' });
+ProgramItemAccountLink.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdBy' });
+ProgramItem.hasMany(ProgramItemMissionLink, { foreignKey: 'program_item_id', as: 'missionLinks' });
+ProgramItemMissionLink.belongsTo(ProgramItem, { foreignKey: 'program_item_id', as: 'programItem' });
+ProgramItemMissionLink.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.hasMany(ProgramItemMissionLink, { foreignKey: 'mission_id', as: 'programItemLinks' });
+ProgramItemMissionLink.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdBy' });
+ProgramItem.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
+User.hasMany(ProgramItem, { foreignKey: 'owner_user_id', as: 'ownedProgramItems' });
+
 module.exports = {
   User,
   ApiKey,
@@ -230,4 +309,19 @@ module.exports = {
   MissionArtifact,
   MissionActivity,
   AbmMissionTemplate,
+  ProcurementProgram,
+  ProgramAccountLink,
+  ProgramMissionLink,
+  ProcurementImportRun,
+  AbmTopicRule,
+  AbmSourceWeight,
+  AbmProgramRule,
+  AbmProgramSuppressionRule,
+  AbmLaneDefinition,
+  AbmAgencyBlacklist,
+  ProcurementProgramNote,
+  ProgramItem,
+  ProgramItemNote,
+  ProgramItemAccountLink,
+  ProgramItemMissionLink,
 };

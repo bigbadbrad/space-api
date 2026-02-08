@@ -48,6 +48,15 @@ IntentSignal.init(
       type: DataTypes.UUID,
       allowNull: true,
     },
+    // ABM Rev 3: Procurement Radar - external ref for procurement signals
+    source: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+      defaultValue: 'first_party',
+    },
+    external_ref_type: { type: DataTypes.STRING(64), allowNull: true },
+    external_ref_id: { type: DataTypes.UUID, allowNull: true },
+    meta_json: { type: DataTypes.JSON, allowNull: true },
   },
   {
     sequelize,
@@ -57,15 +66,11 @@ IntentSignal.init(
     underscored: true,
     timestamps: true,
     indexes: [
-      {
-        fields: ['prospect_company_id'],
-      },
-      {
-        fields: ['occurred_at'],
-      },
-      {
-        fields: ['signal_type'],
-      },
+      { fields: ['prospect_company_id'] },
+      { fields: ['occurred_at'] },
+      { fields: ['signal_type'] },
+      { fields: ['source'] },
+      { fields: ['external_ref_id'] },
     ],
   }
 );

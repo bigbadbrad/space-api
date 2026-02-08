@@ -49,14 +49,7 @@ AnonymousVisitor.init(
     freezeTableName: true,
     underscored: true,
     timestamps: true,
-    indexes: [
-      {
-        fields: ['posthog_distinct_id'],
-      },
-      {
-        fields: ['prospect_company_id'],
-      },
-    ],
+    // unique: true on posthog_distinct_id creates the index; prospect_company_id index via FK
   }
 );
 

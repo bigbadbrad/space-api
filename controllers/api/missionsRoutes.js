@@ -15,6 +15,8 @@ const {
   IntentSignal,
   User,
   DailyAccountIntent,
+  ProgramMissionLink,
+  ProcurementProgram,
 } = require('../../models');
 const { Op } = require('sequelize');
 const sequelize = require('../../config/connection');
@@ -128,7 +130,9 @@ router.get('/', requireInternalUser, async (req, res) => {
 
     const where = {};
     const closedStages = ['won', 'lost', 'on_hold'];
-    if (stage && !closedStages.includes(stage)) {
+    if (stage === 'closed') {
+      where.stage = { [Op.in]: closedStages };
+    } else if (stage && !closedStages.includes(stage)) {
       where.stage = stage;
     } else if (!stage) {
       where.stage = { [Op.notIn]: closedStages };
@@ -386,11 +390,17 @@ router.get('/:id', requireInternalUser, async (req, res) => {
         })
       : [];
 
+    const linkedPrograms = await ProgramMissionLink.findAll({
+      where: { mission_id: id },
+      include: [{ model: ProcurementProgram, as: 'procurementProgram', attributes: ['id', 'title', 'status', 'posted_at', 'due_at', 'service_lane', 'url'] }],
+    });
+
     res.json({
       mission: mission.toJSON(),
       account_summary: accountSummary,
       related_lead_requests: relatedLeadRequests,
       related_intent_signals: relatedSignals,
+      linked_programs: linkedPrograms.map((l) => ({ id: l.id, mission_id: l.mission_id, procurement_program_id: l.procurement_program_id, program: l.procurementProgram ? l.procurementProgram.toJSON() : null })),
     });
   } catch (err) {
     console.error('Error fetching mission:', err);

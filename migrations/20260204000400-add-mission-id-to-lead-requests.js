@@ -5,14 +5,17 @@
  */
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.addColumn('lead_requests', 'mission_id', {
-      type: Sequelize.UUID,
-      allowNull: true,
-      references: { model: 'missions', key: 'id' },
-      onUpdate: 'CASCADE',
-      onDelete: 'SET NULL',
-    });
-    await queryInterface.addIndex('lead_requests', ['mission_id']);
+    const [cols] = await queryInterface.sequelize.query("SHOW COLUMNS FROM lead_requests LIKE 'mission_id'");
+    if (cols.length === 0) {
+      await queryInterface.addColumn('lead_requests', 'mission_id', {
+        type: Sequelize.UUID,
+        allowNull: true,
+        references: { model: 'missions', key: 'id' },
+        onUpdate: 'CASCADE',
+        onDelete: 'SET NULL',
+      });
+      await queryInterface.addIndex('lead_requests', ['mission_id']);
+    }
   },
 
   async down(queryInterface) {

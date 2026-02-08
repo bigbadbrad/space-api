@@ -5,6 +5,9 @@
  */
 module.exports = {
   async up(queryInterface, Sequelize) {
+    const [tables] = await queryInterface.sequelize.query("SHOW TABLES LIKE 'abm_mission_templates'");
+    if (tables.length > 0) return;
+
     await queryInterface.createTable('abm_mission_templates', {
       id: {
         type: Sequelize.UUID,

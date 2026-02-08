@@ -17,7 +17,17 @@ const {
   Mission,
   MissionActivity,
   AbmMissionTemplate,
+  ProcurementProgram,
+  ProcurementProgramNote,
+  ProgramAccountLink,
+  ProgramMissionLink,
+  ProgramItem,
+  ProgramItemNote,
+  ProgramItemAccountLink,
+  ProgramItemMissionLink,
 } = require('../../models');
+const { buildProgramDetailView } = require('../../services/programDetailView.service');
+const { buildProgramItemDetailView } = require('../../services/programItemDetailView.service');
 const { Op } = require('sequelize');
 const { updateIntentScore } = require('../../services/scoring.service');
 
@@ -704,6 +714,8 @@ router.get('/queue', requireInternalUser, async (req, res) => {
         prospect_company_id: m.prospect_company_id,
         org_name: m.prospectCompany?.name || m.prospectCompany?.domain || '—',
         title: m.title,
+        lane: m.service_lane,
+        lead_score: m.confidence != null ? Math.round((m.confidence || 0) * 100) : null,
         next_step_due_at: m.next_step_due_at,
       });
     }
@@ -714,6 +726,8 @@ router.get('/queue', requireInternalUser, async (req, res) => {
         prospect_company_id: m.prospect_company_id,
         org_name: m.prospectCompany?.name || m.prospectCompany?.domain || '—',
         title: m.title,
+        lane: m.service_lane,
+        lead_score: m.confidence != null ? Math.round((m.confidence || 0) * 100) : null,
         last_activity_at: m.last_activity_at,
       });
     }
@@ -724,6 +738,8 @@ router.get('/queue', requireInternalUser, async (req, res) => {
         prospect_company_id: m.prospect_company_id,
         org_name: m.prospectCompany?.name || m.prospectCompany?.domain || '—',
         title: m.title,
+        lane: m.service_lane,
+        lead_score: m.confidence != null ? Math.round((m.confidence || 0) * 100) : null,
         created_at: m.created_at,
       });
     }
@@ -1742,6 +1758,442 @@ router.post('/lead-requests/:id/promote', requireInternalUser, async (req, res) 
   }
 });
 
+// ---------- Procurement Programs (ABM Rev 3) ----------
+const dayjs = require('dayjs');
+
+/**
+ * GET /api/abm/programs/summary
+ */
+router.get('/programs/summary', requireInternalUser, async (req, res) => {
+  try {
+    const range = req.query.range || '30d';
+    const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+    const since = dayjs().subtract(days, 'day').toDate();
+
+    const programs = await ProgramItem.findAll({
+      where: { posted_at: { [Op.gte]: since } },
+      attributes: ['id', 'service_lane', 'status', 'posted_at', 'due_at', 'agency'],
+    });
+
+    const countsByLane = {};
+    let openCount = 0;
+    let dueSoonCount = 0;
+    let newPostedCount = 0;
+    const agencyCounts = {};
+
+    const now = new Date();
+    const dueSoon = dayjs().add(14, 'day').toDate();
+
+    for (const p of programs) {
+      const lane = p.service_lane || 'uncategorized';
+      countsByLane[lane] = (countsByLane[lane] || 0) + 1;
+      if (p.status === 'open') openCount++;
+      if (p.due_at && p.due_at <= dueSoon && p.due_at >= now) dueSoonCount++;
+      if (p.posted_at && dayjs(p.posted_at).isAfter(dayjs().subtract(7, 'day'))) newPostedCount++;
+      if (p.agency) {
+        const a = String(p.agency).trim().slice(0, 200);
+        agencyCounts[a] = (agencyCounts[a] || 0) + 1;
+      }
+    }
+
+    const awardedCount = programs.filter((p) => p.status === 'awarded').length;
+    const topAgencies = Object.entries(agencyCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name, count]) => ({ name, count }));
+
+    res.json({
+      counts_by_lane: countsByLane,
+      open_count: openCount,
+      due_soon_count: dueSoonCount,
+      new_posted_count: newPostedCount,
+      awarded_count: awardedCount,
+      top_agencies: topAgencies,
+    });
+  } catch (err) {
+    console.error('Error fetching programs summary:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/abm/programs
+ * Filters: relevant=true|false (default true), lane=..., min_score=35, suppressed=false (default), confidence_min=...
+ */
+router.get('/programs', requireInternalUser, async (req, res) => {
+  try {
+    const {
+      range = '30d',
+      status = 'all',
+      lane,
+      source: sourceFilter,
+      topic,
+      agency,
+      due,
+      search,
+      page = 1,
+      limit = 50,
+      sort = 'posted_desc',
+      relevant = 'true',
+      min_score,
+      suppressed = 'false',
+      confidence_min,
+    } = req.query;
+
+    const days = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+    const since = dayjs().subtract(days, 'day').toDate();
+    const where = {
+      [Op.and]: [
+        { [Op.or]: [{ posted_at: { [Op.gte]: since } }, { posted_at: null }] },
+      ],
+    };
+
+    if (status && status !== 'all') where[Op.and].push({ status });
+    if (lane) where[Op.and].push({ service_lane: lane });
+    if (sourceFilter && sourceFilter !== 'all') where[Op.and].push({ source_type: sourceFilter });
+    if (topic) where[Op.and].push({ topic });
+    if (agency) where[Op.and].push({ agency: { [Op.like]: `%${agency}%` } });
+
+    if (relevant === 'true') {
+      where[Op.and].push({ relevance_score: { [Op.gte]: min_score ? parseInt(min_score, 10) : 35 } });
+      where[Op.and].push({ suppressed: false });
+    } else if (relevant === 'suppressed') {
+      where[Op.and].push({ suppressed: true });
+    } else {
+      if (suppressed === 'false') where[Op.and].push({ suppressed: false });
+      if (min_score != null) where[Op.and].push({ relevance_score: { [Op.gte]: parseInt(min_score, 10) } });
+    }
+    if (confidence_min != null) where[Op.and].push({ match_confidence: { [Op.gte]: parseFloat(confidence_min) } });
+
+    if (due === 'soon') {
+      where[Op.and].push({
+        due_at: { [Op.and]: [{ [Op.gte]: new Date() }, { [Op.lte]: dayjs().add(14, 'day').toDate() }] },
+      });
+    }
+
+    if (search) {
+      where[Op.and].push({
+        [Op.or]: [
+          { title: { [Op.like]: `%${search}%` } },
+          { agency: { [Op.like]: `%${search}%` } },
+          { source_id: { [Op.like]: `%${search}%` } },
+        ],
+      });
+    }
+
+    const order = sort === 'due_asc' ? [['due_at', 'ASC']] : [['posted_at', 'DESC']];
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const { rows, count } = await ProgramItem.findAndCountAll({
+      where,
+      order,
+      limit: parseInt(limit),
+      offset,
+      attributes: ['id', 'title', 'source_type', 'status', 'posted_at', 'due_at', 'service_lane', 'topic', 'agency', 'links_json', 'source_id', 'relevance_score', 'match_confidence', 'match_reasons_json', 'suppressed', 'suppressed_reason'],
+    });
+
+    const ids = rows.map((r) => r.id);
+    const accountRows = ids.length ? await ProgramItemAccountLink.findAll({ where: { program_item_id: { [Op.in]: ids } }, attributes: ['program_item_id'], raw: true }) : [];
+    const missionRows = ids.length ? await ProgramItemMissionLink.findAll({ where: { program_item_id: { [Op.in]: ids } }, attributes: ['program_item_id'], raw: true }) : [];
+
+    const accMap = {};
+    for (const r of accountRows) accMap[r.program_item_id] = (accMap[r.program_item_id] || 0) + 1;
+    const misMap = {};
+    for (const r of missionRows) misMap[r.program_item_id] = (misMap[r.program_item_id] || 0) + 1;
+
+    const programs = rows.map((r) => {
+      const j = r.toJSON();
+      j.source = j.source_type;
+      j.url = Array.isArray(j.links_json) && j.links_json[0] ? (j.links_json[0].url || j.links_json[0].href) : null;
+      j.external_id = j.source_id;
+      j.linked_accounts_count = accMap[j.id] || 0;
+      j.linked_missions_count = misMap[j.id] || 0;
+      const reasons = Array.isArray(j.match_reasons_json) ? j.match_reasons_json : [];
+      j.reasons_summary = reasons
+        .filter((x) => x.type === 'rule')
+        .map((x) => x.label || x.topic)
+        .slice(0, 3)
+        .join(', ') || null;
+      return j;
+    });
+
+    res.json({ programs, total: count });
+  } catch (err) {
+    console.error('Error fetching programs:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/abm/programs/:id
+ * Returns full program detail view model (overview, requirements, attachments, contacts, triage, matching)
+ */
+router.get('/programs/:id', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const program = await ProgramItem.findByPk(id, {
+      include: [
+        { model: ProgramItemAccountLink, as: 'accountLinks', include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'] }] },
+        { model: ProgramItemMissionLink, as: 'missionLinks', include: [{ model: Mission, as: 'mission', attributes: ['id', 'title', 'stage', 'service_lane'] }] },
+      ],
+    });
+    if (!program) return res.status(404).json({ message: 'Program not found' });
+
+    const intentSignals = await IntentSignal.findAll({
+      where: {
+        external_ref_type: { [Op.in]: ['program_item', 'procurement_program'] },
+        external_ref_id: id,
+      },
+      attributes: ['id', 'prospect_company_id', 'occurred_at', 'topic', 'weight', 'source'],
+    });
+
+    const notes = await ProgramItemNote.findAll({
+      where: { program_item_id: id },
+      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'preferred_name', 'email'] }],
+      order: [['created_at', 'DESC']],
+    });
+
+    let owner = null;
+    if (program.owner_user_id) {
+      owner = await User.findByPk(program.owner_user_id, { attributes: ['id', 'name', 'preferred_name', 'email'] });
+    }
+
+    const out = program.toJSON();
+    out.intent_signals = intentSignals;
+    out.match_reasons_json = out.match_reasons_json ?? [];
+    out.suppression_reason = out.suppressed ? out.suppressed_reason : null;
+
+    const view = buildProgramItemDetailView(out, notes, owner);
+    res.json(view);
+  } catch (err) {
+    console.error('Error fetching program:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * PATCH /api/abm/programs/:id
+ * Update triage fields: owner_user_id, triage_status, priority, internal_notes
+ */
+router.patch('/programs/:id', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { owner_user_id, triage_status, priority, internal_notes, suppressed, suppressed_reason } = req.body;
+
+    const program = await ProcurementProgram.findByPk(id);
+    if (!program) return res.status(404).json({ message: 'Program not found' });
+
+    const updates = {};
+    if (owner_user_id !== undefined) updates.owner_user_id = owner_user_id || null;
+    if (triage_status !== undefined) updates.triage_status = triage_status;
+    if (priority !== undefined) updates.priority = priority;
+    if (internal_notes !== undefined) updates.internal_notes = internal_notes;
+    if (suppressed !== undefined) updates.suppressed = suppressed;
+    if (suppressed_reason !== undefined) updates.suppressed_reason = suppressed_reason;
+
+    if (Object.keys(updates).length > 0) {
+      updates.last_triaged_at = new Date();
+      await program.update(updates);
+    }
+
+    const full = await ProcurementProgram.findByPk(id, {
+      include: [
+        { model: ProgramAccountLink, as: 'accountLinks', include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'] }] },
+        { model: ProgramMissionLink, as: 'missionLinks', include: [{ model: Mission, as: 'mission', attributes: ['id', 'title', 'stage', 'service_lane'] }] },
+      ],
+    });
+    res.json(full.toJSON());
+  } catch (err) {
+    console.error('Error updating program:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/abm/programs/:id/notes
+ */
+router.post('/programs/:id/notes', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { note } = req.body;
+
+    const program = await ProgramItem.findByPk(id);
+    if (!program) return res.status(404).json({ message: 'Program not found' });
+    if (!note || typeof note !== 'string' || !note.trim()) {
+      return res.status(400).json({ message: 'note is required' });
+    }
+
+    const n = await ProgramItemNote.create({
+      program_item_id: id,
+      user_id: req.user?.id || null,
+      note: note.trim(),
+    });
+
+    const full = await ProgramItemNote.findByPk(n.id, {
+      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'preferred_name', 'email'] }],
+    });
+    res.status(201).json({ note: full });
+  } catch (err) {
+    console.error('Error adding note:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/abm/programs/:id/notes
+ */
+router.get('/programs/:id/notes', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const notes = await ProcurementProgramNote.findAll({
+      where: { procurement_program_id: id },
+      include: [{ model: User, as: 'user', attributes: ['id', 'name', 'preferred_name', 'email'] }],
+      order: [['created_at', 'DESC']],
+    });
+    res.json({ notes });
+  } catch (err) {
+    console.error('Error fetching notes:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/abm/programs/:id/link-account
+ */
+router.post('/programs/:id/link-account', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { prospect_company_id, link_type, confidence, evidence_json } = req.body;
+    if (!prospect_company_id) return res.status(400).json({ message: 'prospect_company_id required' });
+
+    const program = await ProgramItem.findByPk(id);
+    if (!program) return res.status(404).json({ message: 'Program not found' });
+
+    const [link] = await ProgramItemAccountLink.findOrCreate({
+      where: { program_item_id: id, prospect_company_id },
+      defaults: {
+        program_item_id: id,
+        prospect_company_id,
+        link_type: link_type || 'unknown',
+        confidence: confidence ?? 0.5,
+        evidence_json: evidence_json || null,
+        created_by_user_id: req.user?.id,
+      },
+    });
+
+    const full = await ProgramItemAccountLink.findByPk(link.id, {
+      include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'] }],
+    });
+    res.status(201).json({ link: full });
+  } catch (err) {
+    console.error('Error linking account:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * DELETE /api/abm/programs/:id/link-account/:link_id
+ */
+router.delete('/programs/:id/link-account/:link_id', requireInternalUser, async (req, res) => {
+  try {
+    const { id, link_id } = req.params;
+    const link = await ProgramAccountLink.findOne({ where: { id: link_id, procurement_program_id: id } });
+    if (!link) return res.status(404).json({ message: 'Link not found' });
+    await link.destroy();
+    res.json({ message: 'Unlinked' });
+  } catch (err) {
+    console.error('Error unlinking account:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/abm/programs/:id/link-mission
+ */
+router.post('/programs/:id/link-mission', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { mission_id, notes } = req.body;
+    if (!mission_id) return res.status(400).json({ message: 'mission_id required' });
+
+    const program = await ProgramItem.findByPk(id);
+    if (!program) return res.status(404).json({ message: 'Program not found' });
+
+    const [link] = await ProgramItemMissionLink.findOrCreate({
+      where: { program_item_id: id, mission_id },
+      defaults: {
+        program_item_id: id,
+        mission_id,
+        notes: notes || null,
+        created_by_user_id: req.user?.id,
+      },
+    });
+
+    const full = await ProgramItemMissionLink.findByPk(link.id, {
+      include: [{ model: Mission, as: 'mission', attributes: ['id', 'title', 'stage', 'service_lane'] }],
+    });
+    res.status(201).json({ link: full });
+  } catch (err) {
+    console.error('Error linking mission:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/abm/programs/:id/create-mission
+ */
+router.post('/programs/:id/create-mission', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { owner_user_id, title, priority } = req.body;
+    const program = await ProgramItem.findByPk(id);
+    if (!program) return res.status(404).json({ message: 'Program not found' });
+
+    const ownerId = owner_user_id || req.user?.id;
+    if (!ownerId) return res.status(400).json({ message: 'owner_user_id or current user required' });
+
+    const defaultTitle = title || `${program.title?.slice(0, 200) || 'Mission'} — ${program.service_lane || 'Procurement'}`;
+
+    const mission = await Mission.create({
+      title: defaultTitle,
+      service_lane: program.service_lane || 'other',
+      owner_user_id: ownerId,
+      source: 'inferred',
+      prospect_company_id: null,
+      stage: 'new',
+      priority: priority || 'medium',
+      confidence: 0.6,
+      last_activity_at: new Date(),
+    });
+
+    await ProgramItemMissionLink.create({
+      program_item_id: id,
+      mission_id: mission.id,
+      notes: 'Created from Procurement Program',
+      created_by_user_id: req.user?.id,
+    });
+
+    await MissionActivity.create({
+      mission_id: mission.id,
+      type: 'note',
+      body: 'Created from Procurement Program',
+      meta_json: { program_item_id: id },
+      created_by_user_id: req.user?.id,
+    });
+
+    const full = await Mission.findByPk(mission.id, {
+      include: [
+        { model: User, as: 'owner', attributes: ['id', 'name', 'preferred_name', 'email'] },
+      ],
+    });
+
+    res.status(201).json({ mission: full, message: 'Mission created' });
+  } catch (err) {
+    console.error('Error creating mission from program:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 /**
  * POST /api/abm/jobs/recompute-intent
  * Manual trigger for ABM intent recompute job (internal only)
@@ -1757,10 +2209,410 @@ router.post('/jobs/recompute-intent', requireInternalUser, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/abm/jobs/import-sam
+ * Manual trigger for SAM.gov opportunities import (admin only, runs in background)
+ */
+router.post('/jobs/import-sam', requireInternalAdmin, async (req, res) => {
+  try {
+    const { runImport } = require('../../jobs/importSamOpportunities');
+    runImport().then((r) => console.log('SAM import complete', r)).catch((e) => console.error('SAM import failed', e));
+    res.json({ message: 'SAM import started in background' });
+  } catch (err) {
+    console.error('Error starting SAM import:', err);
+    res.status(500).json({ message: err.message || 'Failed to start SAM import' });
+  }
+});
+
+/**
+ * POST /api/abm/jobs/ingest-usaspending
+ * Manual trigger for USAspending awards ingest (admin only, runs in background)
+ */
+router.post('/jobs/ingest-usaspending', requireInternalAdmin, async (req, res) => {
+  try {
+    const { runIngest } = require('../../jobs/ingestUsaspendingAwards');
+    const days = req.body?.days ?? req.query?.days ?? 30;
+    runIngest(parseInt(days, 10)).then((r) => console.log('USAspending ingest complete', r)).catch((e) => console.error('USAspending ingest failed', e));
+    res.json({ message: 'USAspending ingest started in background' });
+  } catch (err) {
+    console.error('Error starting USAspending ingest:', err);
+    res.status(500).json({ message: err.message || 'Failed to start USAspending ingest' });
+  }
+});
+
+/**
+ * POST /api/abm/jobs/ingest-spacewerx
+ * Manual trigger for SpaceWERX STRATFI/TACFI ingest (admin only, runs in background)
+ */
+router.post('/jobs/ingest-spacewerx', requireInternalAdmin, async (req, res) => {
+  try {
+    const { runIngest } = require('../../jobs/ingestSpacewerxAwards');
+    runIngest().then((r) => console.log('SpaceWERX ingest complete', r)).catch((e) => console.error('SpaceWERX ingest failed', e));
+    res.json({ message: 'SpaceWERX ingest started in background' });
+  } catch (err) {
+    console.error('Error starting SpaceWERX ingest:', err);
+    res.status(500).json({ message: err.message || 'Failed to start SpaceWERX ingest' });
+  }
+});
+
 // ---------- Admin routes (Super User only) ----------
 const registry = require('../../abm/registry');
 const { logAudit } = require('../../services/abmAuditLog.service');
-const { AbmScoreConfig, AbmScoreWeight } = require('../../models');
+const { invalidateCache } = require('../../services/procurementRegistry.service');
+const { classifyProgram, invalidateCache: invalidateProgramClassifierCache } = require('../../services/programClassifier.service');
+const { AbmScoreConfig, AbmScoreWeight, AbmTopicRule, AbmSourceWeight, ProcurementImportRun, AbmProgramRule, AbmProgramSuppressionRule, AbmLaneDefinition, AbmAgencyBlacklist } = require('../../models');
+
+// Procurement admin: topic rules
+router.get('/admin/topic-rules', requireInternalAdmin, async (req, res) => {
+  try {
+    const rules = await AbmTopicRule.findAll({ order: [['priority', 'DESC']] });
+    res.json({ rules: rules.map((r) => r.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch topic rules' });
+  }
+});
+
+router.post('/admin/topic-rules', requireInternalAdmin, async (req, res) => {
+  try {
+    const { enabled, priority, source, match_field, match_type, match_value, service_lane, topic, weight } = req.body;
+    const rule = await AbmTopicRule.create({
+      enabled: enabled !== false,
+      priority: priority ?? 0,
+      source: source || null,
+      match_field: match_field || null,
+      match_type: match_type || 'contains',
+      match_value: match_value || null,
+      service_lane: service_lane || null,
+      topic: topic || null,
+      weight: weight ?? null,
+    });
+    invalidateCache();
+    res.json({ rule: rule.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to create topic rule' });
+  }
+});
+
+router.patch('/admin/topic-rules/:id', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rule = await AbmTopicRule.findByPk(id);
+    if (!rule) return res.status(404).json({ message: 'Topic rule not found' });
+    const { enabled, priority, source, match_field, match_type, match_value, service_lane, topic, weight } = req.body;
+    const updates = {};
+    if (typeof enabled === 'boolean') updates.enabled = enabled;
+    if (typeof priority === 'number') updates.priority = priority;
+    if (source != null) updates.source = source;
+    if (match_field != null) updates.match_field = match_field;
+    if (match_type != null) updates.match_type = match_type;
+    if (match_value != null) updates.match_value = match_value;
+    if (service_lane != null) updates.service_lane = service_lane;
+    if (topic != null) updates.topic = topic;
+    if (weight != null) updates.weight = weight;
+    await rule.update(updates);
+    invalidateCache();
+    res.json({ rule: rule.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to update topic rule' });
+  }
+});
+
+router.post('/admin/topic-rules/reorder', requireInternalAdmin, async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids)) return res.status(400).json({ message: 'ids must be an array' });
+    for (let i = 0; i < ids.length; i++) {
+      await AbmTopicRule.update({ priority: ids.length - 1 - i }, { where: { id: ids[i] } });
+    }
+    invalidateCache();
+    res.json({ message: 'Reordered' });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to reorder' });
+  }
+});
+
+// Procurement admin: source weights
+router.get('/admin/source-weights', requireInternalAdmin, async (req, res) => {
+  try {
+    const weights = await AbmSourceWeight.findAll();
+    res.json({ weights: weights.map((w) => w.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch source weights' });
+  }
+});
+
+router.post('/admin/source-weights', requireInternalAdmin, async (req, res) => {
+  try {
+    const { source, multiplier, enabled } = req.body;
+    if (!source) return res.status(400).json({ message: 'source required' });
+    const [w] = await AbmSourceWeight.upsert(
+      { source, multiplier: multiplier ?? 1.0, enabled: enabled !== false },
+      { conflictFields: ['source'] }
+    );
+    invalidateCache();
+    res.json({ weight: w.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to upsert source weight' });
+  }
+});
+
+// Procurement admin: import runs
+router.get('/admin/import-runs', requireInternalAdmin, async (req, res) => {
+  try {
+    const runs = await ProcurementImportRun.findAll({
+      order: [['started_at', 'DESC']],
+      limit: 50,
+    });
+    res.json({ runs: runs.map((r) => r.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch import runs' });
+  }
+});
+
+// Cache flush (procurement registry)
+router.post('/admin/cache/flush', requireInternalAdmin, async (req, res) => {
+  try {
+    invalidateCache();
+    invalidateProgramClassifierCache();
+    if (typeof registry.invalidateCache === 'function') registry.invalidateCache();
+    res.json({ message: 'Cache flushed' });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to flush cache' });
+  }
+});
+
+// Program Intelligence (Addendum): program rules, suppression rules, lane definitions, reclassify
+router.get('/admin/agency-blacklist', requireInternalAdmin, async (req, res) => {
+  try {
+    const entries = await AbmAgencyBlacklist.findAll({ order: [['agency_pattern', 'ASC']] });
+    res.json({ entries: entries.map((e) => e.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch agency blacklist' });
+  }
+});
+
+router.post('/admin/agency-blacklist', requireInternalAdmin, async (req, res) => {
+  try {
+    const { agency_pattern, enabled, notes } = req.body;
+    if (!agency_pattern || typeof agency_pattern !== 'string') {
+      return res.status(400).json({ message: 'agency_pattern required' });
+    }
+    const entry = await AbmAgencyBlacklist.create({
+      agency_pattern: agency_pattern.trim(),
+      enabled: enabled !== false,
+      notes: notes || null,
+    });
+    invalidateProgramClassifierCache();
+    res.status(201).json({ entry: entry.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to add agency blacklist' });
+  }
+});
+
+router.delete('/admin/agency-blacklist/:id', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const entry = await AbmAgencyBlacklist.findByPk(id);
+    if (!entry) return res.status(404).json({ message: 'Agency blacklist entry not found' });
+    await entry.destroy();
+    invalidateProgramClassifierCache();
+    res.json({ message: 'Removed' });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to remove agency blacklist' });
+  }
+});
+
+router.patch('/admin/agency-blacklist/:id', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const entry = await AbmAgencyBlacklist.findByPk(id);
+    if (!entry) return res.status(404).json({ message: 'Agency blacklist entry not found' });
+    const updates = {};
+    if (typeof req.body.enabled === 'boolean') updates.enabled = req.body.enabled;
+    if (typeof req.body.agency_pattern === 'string') updates.agency_pattern = req.body.agency_pattern.trim();
+    if (req.body.notes !== undefined) updates.notes = req.body.notes;
+    await entry.update(updates);
+    invalidateProgramClassifierCache();
+    res.json({ entry: entry.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to update agency blacklist' });
+  }
+});
+
+router.get('/admin/program-rules', requireInternalAdmin, async (req, res) => {
+  try {
+    const rules = await AbmProgramRule.findAll({ order: [['priority', 'DESC']] });
+    res.json({ rules: rules.map((r) => r.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch program rules' });
+  }
+});
+
+router.post('/admin/program-rules', requireInternalAdmin, async (req, res) => {
+  try {
+    const { enabled, priority, match_field, match_type, match_value, service_lane, topic, add_score, set_confidence, notes } = req.body;
+    const rule = await AbmProgramRule.create({
+      enabled: enabled !== false,
+      priority: priority ?? 0,
+      match_field: match_field || null,
+      match_type: match_type || 'contains',
+      match_value: match_value || null,
+      service_lane: service_lane || null,
+      topic: topic || null,
+      add_score: add_score ?? 20,
+      set_confidence: set_confidence ?? null,
+      notes: notes || null,
+    });
+    invalidateProgramClassifierCache();
+    res.json({ rule: rule.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to create program rule' });
+  }
+});
+
+router.patch('/admin/program-rules/:id', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rule = await AbmProgramRule.findByPk(id);
+    if (!rule) return res.status(404).json({ message: 'Program rule not found' });
+    const updates = {};
+    ['enabled', 'priority', 'match_field', 'match_type', 'match_value', 'service_lane', 'topic', 'add_score', 'set_confidence', 'notes'].forEach((k) => {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    });
+    await rule.update(updates);
+    invalidateProgramClassifierCache();
+    res.json({ rule: rule.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to update program rule' });
+  }
+});
+
+router.get('/admin/program-suppression-rules', requireInternalAdmin, async (req, res) => {
+  try {
+    const rules = await AbmProgramSuppressionRule.findAll({ order: [['priority', 'DESC']] });
+    res.json({ rules: rules.map((r) => r.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch suppression rules' });
+  }
+});
+
+router.post('/admin/program-suppression-rules', requireInternalAdmin, async (req, res) => {
+  try {
+    const { enabled, priority, match_field, match_type, match_value, suppress_reason, suppress_score_threshold } = req.body;
+    const rule = await AbmProgramSuppressionRule.create({
+      enabled: enabled !== false,
+      priority: priority ?? 0,
+      match_field: match_field || null,
+      match_type: match_type || 'contains',
+      match_value: match_value || null,
+      suppress_reason: suppress_reason || null,
+      suppress_score_threshold: suppress_score_threshold ?? null,
+    });
+    invalidateProgramClassifierCache();
+    res.json({ rule: rule.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to create suppression rule' });
+  }
+});
+
+router.patch('/admin/program-suppression-rules/:id', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rule = await AbmProgramSuppressionRule.findByPk(id);
+    if (!rule) return res.status(404).json({ message: 'Suppression rule not found' });
+    const updates = {};
+    ['enabled', 'priority', 'match_field', 'match_type', 'match_value', 'suppress_reason', 'suppress_score_threshold'].forEach((k) => {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    });
+    await rule.update(updates);
+    invalidateProgramClassifierCache();
+    res.json({ rule: rule.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to update suppression rule' });
+  }
+});
+
+router.get('/admin/lane-definitions', requireInternalAdmin, async (req, res) => {
+  try {
+    const lanes = await AbmLaneDefinition.findAll({ order: [['lane_key', 'ASC']] });
+    res.json({ lanes: lanes.map((l) => l.toJSON()) });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to fetch lane definitions' });
+  }
+});
+
+router.patch('/admin/lane-definitions/:lane_key', requireInternalAdmin, async (req, res) => {
+  try {
+    const { lane_key } = req.params;
+    const lane = await AbmLaneDefinition.findByPk(lane_key);
+    if (!lane) return res.status(404).json({ message: 'Lane definition not found' });
+    const updates = {};
+    ['display_name', 'description', 'keywords_json'].forEach((k) => {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    });
+    await lane.update(updates);
+    res.json({ lane: lane.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to update lane definition' });
+  }
+});
+
+router.post('/admin/programs/reclassify', requireInternalAdmin, async (req, res) => {
+  try {
+    const { range = '7d' } = req.query;
+    const days = range === '30d' ? 30 : 7;
+    const since = dayjs().subtract(days, 'day').toDate();
+
+    const programs = await ProcurementProgram.findAll({
+      where: { posted_at: { [Op.gte]: since } },
+      attributes: ['id', 'title', 'summary', 'agency', 'naics', 'psc', 'url'],
+    });
+
+    let reclassified = 0;
+    for (const p of programs) {
+      const result = await classifyProgram(p);
+      await ProcurementProgram.update(
+        {
+          service_lane: result.service_lane,
+          topic: result.topic,
+          relevance_score: result.relevance_score,
+          match_confidence: result.match_confidence,
+          match_reasons_json: result.match_reasons_json,
+          classification_version: result.classification_version,
+          suppressed: result.suppressed,
+          suppressed_reason: result.suppressed_reason,
+        },
+        { where: { id: p.id } }
+      );
+      reclassified += 1;
+    }
+    res.json({ message: `Reclassified ${reclassified} programs` });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to reclassify' });
+  }
+});
+
+router.post('/admin/programs/:id/override', requireInternalAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { service_lane, topic, relevance_score, suppressed, notes } = req.body;
+    const program = await ProcurementProgram.findByPk(id);
+    if (!program) return res.status(404).json({ message: 'Program not found' });
+
+    const updates = {};
+    if (service_lane !== undefined) updates.service_lane = service_lane;
+    if (topic !== undefined) updates.topic = topic;
+    if (relevance_score !== undefined) updates.relevance_score = relevance_score;
+    if (typeof suppressed === 'boolean') {
+      updates.suppressed = suppressed;
+      updates.suppressed_reason = suppressed ? (notes || 'Manual override') : null;
+    }
+    if (Object.keys(updates).length) await program.update(updates);
+    res.json({ program: program.toJSON() });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Failed to override' });
+  }
+});
 
 function applyEventRulesTest(path, eventName, rules) {
   for (const r of rules || []) {

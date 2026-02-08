@@ -38,11 +38,7 @@ CompanyDomain.init(
     freezeTableName: true,
     underscored: true,
     timestamps: true,
-    indexes: [
-      {
-        fields: ['domain'],
-      },
-    ],
+    // unique: true on domain creates the index; no extra indexes needed
   }
 );
 

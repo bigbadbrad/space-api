@@ -19,7 +19,7 @@ ProspectCompany.init(
     domain: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      unique: 'domain', // named index prevents Sequelize creating domain_1, domain_2... (MySQL 64-index limit)
     },
     intent_score: {
       type: DataTypes.INTEGER,
@@ -68,12 +68,8 @@ ProspectCompany.init(
     underscored: true,
     timestamps: true,
     indexes: [
-      {
-        fields: ['domain'],
-      },
-      {
-        fields: ['intent_score'],
-      },
+      // domain has unique: true above, which creates its own index - do not duplicate
+      { fields: ['intent_score'] },
     ],
   }
 );
