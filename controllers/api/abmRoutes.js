@@ -29,6 +29,7 @@ const {
 const { buildProgramDetailView } = require('../../services/programDetailView.service');
 const { buildProgramItemDetailView } = require('../../services/programItemDetailView.service');
 const { Op } = require('sequelize');
+const sequelize = require('../../config/connection');
 const { updateIntentScore } = require('../../services/scoring.service');
 
 /**
@@ -1199,14 +1200,75 @@ router.get('/lead-requests/:id/timeline', requireInternalUser, async (req, res) 
  */
 router.get('/accounts', requireInternalUser, async (req, res) => {
   try {
-    const { range = '7d', stage, lane, surge, search, page = 1, limit = 50 } = req.query;
+    const { range = '7d', stage, lane, surge, search, page = 1, limit = 50, show_all } = req.query;
     const date = today();
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const offset = (pageNum - 1) * limitNum;
+    const showAll = show_all === 'true' || show_all === '1';
 
     let daiList;
     let totalCount;
+
+    if (showAll && !lane) {
+      const pcWhere = {};
+      if (stage) pcWhere.intent_stage = stage;
+      if (surge) pcWhere.surge_level = surge;
+      if (search) {
+        pcWhere[Op.or] = [
+          { name: { [Op.like]: `%${search}%` } },
+          { domain: { [Op.like]: `%${search}%` } },
+        ];
+      }
+      const { count, rows } = await ProspectCompany.findAndCountAll({
+        where: Object.keys(pcWhere).length ? pcWhere : undefined,
+        order: [[sequelize.literal('COALESCE(ProspectCompany.intent_score, 0)'), 'DESC']],
+        limit: limitNum,
+        offset,
+        include: [
+          {
+            model: DailyAccountIntent,
+            as: 'dailyAccountIntents',
+            required: false,
+            where: { date },
+            attributes: ['key_events_7d_json', 'unique_people_7d'],
+          },
+        ],
+      });
+      const accounts = await Promise.all(
+        rows.map(async (pc) => {
+          const dai = pc.dailyAccountIntents?.[0];
+          const whyHot =
+            dai?.key_events_7d_json && typeof dai.key_events_7d_json === 'object'
+              ? Object.entries(dai.key_events_7d_json)
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 3)
+                  .map(([k, v]) =>
+                    `${v}× ${String(k).replace(/_page_view|cta_click_/g, ' ').replace(/_/g, ' ').trim()}`
+                  )
+              : [];
+          const latestLr = await LeadRequest.findOne({
+            where: { prospect_company_id: pc.id },
+            attributes: ['id'],
+            order: [['created_at', 'DESC']],
+          });
+          return {
+            id: pc.id,
+            name: pc.name,
+            domain: pc.domain,
+            intent_score: pc.intent_score ?? null,
+            intent_stage: pc.intent_stage ?? null,
+            surge_level: pc.surge_level ?? 'Normal',
+            top_lane: pc.top_lane ?? null,
+            last_seen_at: pc.last_seen_at,
+            unique_people_7d: dai?.unique_people_7d ?? null,
+            why_hot: whyHot,
+            latest_lead_request_id: latestLr?.id,
+          };
+        })
+      );
+      return res.json({ accounts, total: count, page: pageNum, limit: limitNum });
+    }
 
     if (lane) {
       const allDai = await DailyAccountIntent.findAll({
