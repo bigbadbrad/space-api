@@ -73,7 +73,7 @@ async function sendRcsMessage(phoneNumber, messageData, fromNumber, messagingPro
 /* -------------------------------------------------
  * Send welcome text to a new user
  * ------------------------------------------------- */
-async function sendWelcomeToUser(userId, areaCode) {
+async function sendWelcomeToUser(userId) {
   try {
     const user = await User.findByPk(userId);
     if (!user) {
@@ -85,7 +85,7 @@ async function sendWelcomeToUser(userId, areaCode) {
       return;
     }
 
-    const imageUrl = `https://assets.ranch.dog/logos/${areaCode}.png`;
+    const imageUrl = `https://assets.ranch.dog/space-gtm/space-gtm-text-message5.png`;
 
     const messageData = buildWelcomeData(imageUrl);
 

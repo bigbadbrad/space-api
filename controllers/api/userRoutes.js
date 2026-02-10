@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const jwt = require("jsonwebtoken");
 const { Op } = require("sequelize");
 const { sendSmsToUser } = require('../../utils/smsUtils');
+const { sendWelcomeToUser, sendVCard } = require('../../utils/telnyxUtils');
 const { authenticateToken } = require('../../middleware/auth.middleware');
 
 
@@ -249,6 +250,8 @@ router.post("/signup", async (req, res) => {
       process.env.SECRET,
       { expiresIn: "8h" }
     );
+
+    await sendWelcomeToUser(user.id);
 
     return res.status(201).json({
       message: "User created successfully",

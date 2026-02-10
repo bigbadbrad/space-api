@@ -27,14 +27,24 @@ const server = http.createServer(app);
 // Initialize WebSocket server after creating the HTTP server
 initWebSocketServer(server); // This initializes the WebSocket server
 
-sequelize.sync({ force: false, alter: false }).then(() => {
-  server.listen(PORT, () => {
-    console.log(`App listening on port ${PORT}!`);
-  });
+console.log('Starting Sequelize sync...');
+sequelize
+  .sync({ force: false, alter: false })
+  .then(() => {
+    console.log('Sequelize sync completed successfully. Starting HTTP server...');
 
-  // Daily procurement ingests at 2am UTC (Sprint 2: SAM + USAspending + SpaceWERX)
-  cron.schedule('0 2 * * *', () => {
-    const { runProcurementIngests } = require('./jobs/scheduleProcurement');
-    runProcurementIngests().catch((e) => console.error('Procurement ingests failed:', e));
+    server.listen(PORT, () => {
+      console.log(`App listening on port ${PORT}!`);
+    });
+
+    // Daily procurement ingests at 2am UTC (Sprint 2: SAM + USAspending + SpaceWERX)
+    cron.schedule('0 2 * * *', () => {
+      const { runProcurementIngests } = require('./jobs/scheduleProcurement');
+      runProcurementIngests().catch((e) =>
+        console.error('Procurement ingests failed:', e)
+      );
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to sync Sequelize or start server:', err);
   });
-});
