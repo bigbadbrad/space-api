@@ -85,7 +85,7 @@ async function sendWelcomeToUser(userId) {
       return;
     }
 
-    const imageUrl = `https://assets.ranch.dog/space-gtm/space-gtm-text-message5.png`;
+    const imageUrl = `https://assets.ranch.dog/space-gtm/space-gtm-text-message6.png`;
 
     const messageData = buildWelcomeData(imageUrl);
 
