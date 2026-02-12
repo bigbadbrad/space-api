@@ -1,10 +1,11 @@
 // /controllers/api/abmRoutes.js
 const router = require('express').Router();
 const { requireInternalUser, requireInternalAdmin } = require('../../middleware/auth.middleware');
-const { 
-  ProspectCompany, 
-  IntentSignal, 
+const {
+  ProspectCompany,
+  IntentSignal,
   Contact,
+  ContactIdentity,
   CompanyDomain,
   CustomerCompany,
   LeadRequest,
@@ -1440,6 +1441,71 @@ router.get('/accounts', requireInternalUser, async (req, res) => {
   } catch (err) {
     console.error('Error fetching accounts:', err);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/abm/accounts/:id/people
+ * People Inside Accounts: 3-tier (Known contacts, Anonymous visitors, Unmatched).
+ * Option B: when PostHog not configured, returns only known_contacts; anonymous_visitors and unmatched are empty.
+ */
+router.get('/accounts/:id/people', requireInternalUser, async (req, res) => {
+  try {
+    const { id: accountId } = req.params;
+    const rangeDays = Math.min(30, Math.max(7, parseInt(req.query.range_days, 10) || 7));
+    const includeUnmatched = req.query.include_unmatched === 'true' || req.query.include_unmatched === '1';
+
+    const prospect = await ProspectCompany.findByPk(accountId, { attributes: ['id', 'name', 'domain'] });
+    if (!prospect) return res.status(404).json({ message: 'Account not found' });
+
+    const accountKey = prospect.domain || prospect.id;
+
+    const contacts = await Contact.findAll({
+      where: { prospect_company_id: accountId },
+      attributes: ['id', 'email', 'first_name', 'last_name', 'title', 'status', 'last_seen_at'],
+      order: [['last_seen_at', 'DESC']],
+    });
+
+    const contactIds = contacts.map((c) => c.id);
+    const identities = contactIds.length
+      ? await ContactIdentity.findAll({
+          where: { contact_id: contactIds, identity_type: 'posthog_distinct_id' },
+          attributes: ['contact_id', 'identity_value'],
+        })
+      : [];
+    const distinctIdByContact = new Map(identities.map((i) => [i.contact_id, i.identity_value]));
+
+    const known_contacts = contacts.map((c) => {
+      const row = c.toJSON ? c.toJSON() : { ...c.get() };
+      row.posthog_distinct_id = distinctIdByContact.get(c.id) ?? null;
+      return row;
+    });
+
+    const posthogConfigured = !!(process.env.POSTHOG_HOST && process.env.POSTHOG_PROJECT_API_KEY);
+
+    const payload = {
+      account: {
+        id: prospect.id,
+        name: prospect.name,
+        domain: prospect.domain,
+        account_key: accountKey,
+      },
+      range_days: rangeDays,
+      known_contacts,
+      anonymous_visitors: posthogConfigured ? [] : [],
+      unmatched: includeUnmatched ? [] : [],
+      generated_at: new Date().toISOString(),
+      posthog_configured: posthogConfigured,
+    };
+
+    if (!posthogConfigured) {
+      payload.banner = 'PostHog not configured. Anonymous visitors and unmatched are unavailable.';
+    }
+
+    return res.json(payload);
+  } catch (err) {
+    console.error('Error fetching account people:', err);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 

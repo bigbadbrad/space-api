@@ -5,6 +5,7 @@ const { resolveAccountKey } = require('../utils/domain');
 const {
   ProspectCompany,
   Contact,
+  ContactIdentity,
   User,
   IntentSignal,
   LeadRequest,
@@ -15,11 +16,11 @@ const { Op } = require('sequelize');
 function pickUtm(utm) {
   const u = utm || {};
   return {
-    utm_source: u.source || null,
-    utm_medium: u.medium || null,
-    utm_campaign: u.campaign || null,
-    utm_content: u.content || null,
-    utm_term: u.term || null,
+    utm_source: u.utm_source ?? u.source ?? null,
+    utm_medium: u.utm_medium ?? u.medium ?? null,
+    utm_campaign: u.utm_campaign ?? u.campaign ?? null,
+    utm_content: u.utm_content ?? u.content ?? null,
+    utm_term: u.utm_term ?? u.term ?? null,
   };
 }
 
@@ -275,12 +276,29 @@ module.exports = {
       }
     }
 
+    const posthogDistinctId = payload.tracking?.posthog_distinct_id?.trim?.() || null;
+    if (contact && posthogDistinctId) {
+      try {
+        const [ci] = await ContactIdentity.findOrCreate({
+          where: { identity_type: 'posthog_distinct_id', identity_value: posthogDistinctId },
+          defaults: { contact_id: contact.id, identity_type: 'posthog_distinct_id', identity_value: posthogDistinctId },
+        });
+        if (ci.contact_id !== contact.id) {
+          ci.contact_id = contact.id;
+          await ci.save();
+        }
+      } catch (err) {
+        console.warn('ContactIdentity upsert failed (identity stitching):', err?.message || err);
+      }
+    }
+
     return res.status(201).json({
       ok: true,
       lead_request_id: leadRequest.id,
       lead_score: leadScore,
       prospect_company_id: company ? company.id : null,
       contact_id: contact ? contact.id : null,
+      account_key: accountKey ?? null,
     });
   },
 };
