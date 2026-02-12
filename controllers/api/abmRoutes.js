@@ -1481,7 +1481,10 @@ router.get('/accounts/:id/people', requireInternalUser, async (req, res) => {
       return row;
     });
 
-    const posthogConfigured = !!(process.env.POSTHOG_HOST && process.env.POSTHOG_PROJECT_API_KEY);
+    const posthogConfigured = !!(
+      process.env.POSTHOG_HOST &&
+      (process.env.POSTHOG_PERSONAL_API_KEY || process.env.POSTHOG_PROJECT_API_KEY)
+    );
 
     const payload = {
       account: {
@@ -1733,6 +1736,80 @@ router.get('/lanes/explainer', requireInternalUser, async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching lane explainer:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/abm/people/debug
+ * People Debug feed: combined known + anonymous + unmatched for debugging PostHog.
+ * Query: range=15m|1h|24h|7d|30d, min_events=1, include_unmatched=false, search=...
+ * When PostHog not configured, returns known contacts only in the same row shape.
+ */
+router.get('/people/debug', requireInternalUser, async (req, res) => {
+  try {
+    const range = ['15m', '1h', '24h', '7d', '30d'].includes(req.query.range) ? req.query.range : '24h';
+    const minEvents = Math.max(1, parseInt(req.query.min_events, 10) || 1);
+    const includeUnmatched = req.query.include_unmatched === 'true' || req.query.include_unmatched === '1';
+    const search = (req.query.search || '').trim().toLowerCase();
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
+
+    const rows = [];
+
+    const contacts = await Contact.findAll({
+      include: [{ model: ProspectCompany, as: 'prospectCompany', required: true }],
+      limit: limit * 2,
+    });
+
+    for (const c of contacts) {
+      const account = c.prospectCompany;
+      if (!account) continue;
+      const personLabel = c.first_name || c.last_name ? `${(c.first_name || '').trim()} ${(c.last_name || '').trim()}`.trim() : c.email || '—';
+      if (search) {
+        const matchAccount = (account.name || '').toLowerCase().includes(search) || (account.domain || '').toLowerCase().includes(search);
+        const matchPerson = (c.email || '').toLowerCase().includes(search) || (personLabel || '').toLowerCase().includes(search);
+        if (!matchAccount && !matchPerson) continue;
+      }
+      rows.push({
+        type: 'known',
+        person_label: c.email || personLabel,
+        person_id: c.id,
+        account_id: account.id,
+        account_name: account.name || account.domain,
+        account_domain: account.domain,
+        role_title: c.title || null,
+        events_count: null,
+        last_seen_at: c.last_seen_at || c.updated_at,
+      });
+      if (rows.length >= limit) break;
+    }
+
+    const posthogConfigured = !!(process.env.POSTHOG_HOST && process.env.POSTHOG_PROJECT_API_KEY);
+    if (posthogConfigured) {
+      try {
+        const { fetchPeopleDebugFromPostHog } = require('../../utils/posthogPeopleDebug');
+        const { anonymous, unmatched } = await fetchPeopleDebugFromPostHog({ range, minEvents, includeUnmatched, search, limit });
+        for (const a of anonymous) {
+          if (search && !a.account_domain?.toLowerCase().includes(search) && !a.account_name?.toLowerCase().includes(search) && !(a.person_label || '').toLowerCase().includes(search)) continue;
+          rows.push(a);
+        }
+        if (includeUnmatched) for (const u of unmatched) rows.push(u);
+      } catch (err) {
+        console.warn('PostHog people debug fetch failed:', err?.message || err);
+      }
+    }
+
+    const limitedRows = rows.slice(0, limit);
+
+    res.json({
+      range,
+      min_events: minEvents,
+      include_unmatched: includeUnmatched,
+      rows: limitedRows,
+      generated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('Error fetching people debug:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });

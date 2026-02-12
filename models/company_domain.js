@@ -23,7 +23,6 @@ CompanyDomain.init(
     domain: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
     },
     is_primary: {
       type: DataTypes.BOOLEAN,
