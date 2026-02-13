@@ -21,6 +21,7 @@ AbmEventRule.init(
     lane: { type: DataTypes.STRING(64), allowNull: true },
     weight_override: { type: DataTypes.INTEGER, allowNull: true },
     score_config_id: { type: DataTypes.UUID, allowNull: true },
+    evidence_template: { type: DataTypes.TEXT, allowNull: true },
     notes: { type: DataTypes.TEXT, allowNull: true },
   },
   {

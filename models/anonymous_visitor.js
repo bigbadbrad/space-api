@@ -23,7 +23,7 @@ AnonymousVisitor.init(
     posthog_distinct_id: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      // unique not enforced here to avoid exceeding MySQL 64-index limit on this table
     },
     ip_hash: {
       type: DataTypes.STRING,

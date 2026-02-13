@@ -265,25 +265,28 @@ router.get('/signals/feed', requireInternalUser, async (req, res) => {
 
 /**
  * GET /api/abm/activity
- * Activity feed from intent_signals + KPIs + trending topics/lanes
+ * Activity feed from intent_signals + lead_requests + DailyAccountIntent (fallback when signals sparse)
+ * KPIs and trending use both intent_signals and daily_account_intent so Activity shows data after Epic 4 recompute.
  */
 router.get('/activity', requireInternalUser, async (req, res) => {
   try {
     const { range = '7d', limit = 200 } = req.query;
     const days = range === '30d' ? 30 : 7;
+    const limitNum = Math.min(parseInt(limit) || 200, 500);
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
     const cutoff7d = new Date();
     cutoff7d.setDate(cutoff7d.getDate() - 7);
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
+    const todayDate = new Date().toISOString().slice(0, 10);
 
     const where = { occurred_at: { [Op.gte]: cutoff } };
 
     const signals = await IntentSignal.findAll({
       where,
       order: [['occurred_at', 'DESC']],
-      limit: Math.min(parseInt(limit) || 200, 500),
+      limit: limitNum,
       include: [
         {
           model: ProspectCompany,
@@ -294,11 +297,10 @@ router.get('/activity', requireInternalUser, async (req, res) => {
       ],
     });
 
-    // Include lead requests that may not have intent signals (e.g. when prospect_company was null)
     const leadRequests = await LeadRequest.findAll({
       where: { created_at: { [Op.gte]: cutoff } },
       order: [['created_at', 'DESC']],
-      limit: Math.min(parseInt(limit) || 200, 500),
+      limit: limitNum,
       include: [
         { model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'], required: false },
       ],
@@ -313,13 +315,12 @@ router.get('/activity', requireInternalUser, async (req, res) => {
       attributes: ['prospect_company_id'],
       raw: true,
     });
-    const accountsActive7d = new Set(uniqueAccounts7d.map((s) => s.prospect_company_id)).size;
+    let accountsActive7d = new Set(uniqueAccounts7d.map((s) => s.prospect_company_id)).size;
 
     const leadRequests7d = await LeadRequest.count({
       where: { created_at: { [Op.gte]: cutoff7d } },
     });
 
-    const todayDate = new Date().toISOString().slice(0, 10);
     const explodingAccounts7d = await DailyAccountIntent.count({
       where: { date: todayDate, surge_level: 'Exploding' },
     }).catch(() => 0);
@@ -334,16 +335,6 @@ router.get('/activity', requireInternalUser, async (req, res) => {
       typeWeights[type] = (typeWeights[type] || 0) + w;
     }
 
-    const trendingLanes = Object.entries(laneWeights)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([name, score]) => ({ name, score }));
-
-    const trendingTypes = Object.entries(typeWeights)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([name, score]) => ({ name, score }));
-
     const signalFeed = signals.map((s) => ({
       id: s.id,
       time: s.occurred_at,
@@ -357,7 +348,6 @@ router.get('/activity', requireInternalUser, async (req, res) => {
       link: null,
     }));
 
-    // Add lead requests that have no matching lead_submitted intent signal (e.g. prospect_company was null)
     const hasLeadSubmittedSignal = (pcId, createdAt) =>
       signals.some(
         (s) =>
@@ -380,9 +370,61 @@ router.get('/activity', requireInternalUser, async (req, res) => {
         link: `/dashboard/lead-requests?id=${lr.id}`,
       }));
 
-    const feed = [...signalFeed, ...lrFeed]
+    const dateStrings = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dateStrings.push(d.toISOString().slice(0, 10));
+    }
+    const daiRows = await DailyAccountIntent.findAll({
+      where: { date: { [Op.in]: dateStrings } },
+      order: [['date', 'DESC']],
+      limit: limitNum,
+      include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'], required: true }],
+    });
+    const daiFeed = daiRows.map((dai) => {
+      const dateEnd = new Date(dai.date);
+      dateEnd.setHours(23, 59, 59, 999);
+      return {
+        id: `dai-${dai.id}`,
+        time: dateEnd,
+        account_id: dai.prospectCompany?.id,
+        account_name: dai.prospectCompany?.name,
+        account_domain: dai.prospectCompany?.domain,
+        person: null,
+        activity_type: 'intent_computed',
+        lane: dai.top_lane || 'other',
+        weight: dai.intent_score ?? 0,
+        link: dai.prospectCompany?.id ? `/dashboard/accounts/${dai.prospectCompany.id}` : null,
+      };
+    });
+    const cutoff7dStr = cutoff7d.toISOString().slice(0, 10);
+    const daiAccountIds7d = new Set();
+    for (const d of daiRows) {
+      if (String(d.date) >= cutoff7dStr) daiAccountIds7d.add(d.prospect_company_id);
+    }
+    accountsActive7d = Math.max(accountsActive7d, daiAccountIds7d.size);
+
+    for (const d of daiRows) {
+      const lane = d.top_lane || 'other';
+      const w = d.intent_score ?? 0;
+      laneWeights[lane] = (laneWeights[lane] || 0) + w;
+      typeWeights['intent_computed'] = (typeWeights['intent_computed'] || 0) + w;
+    }
+
+    const trendingLanes = Object.entries(laneWeights)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name, score]) => ({ name, score }));
+
+    const trendingTypes = Object.entries(typeWeights)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name, score]) => ({ name, score }));
+
+    const feed = [...signalFeed, ...lrFeed, ...daiFeed]
       .sort((a, b) => new Date(b.time) - new Date(a.time))
-      .slice(0, Math.min(parseInt(limit) || 200, 500));
+      .slice(0, limitNum);
 
     res.json({
       kpis: {
@@ -408,6 +450,7 @@ function today() {
 /**
  * GET /api/abm/overview
  * Executive summary for ABM home — no filters. Returns KPIs, top 10 hot accounts, top 10 lead requests, hot-over-time.
+ * When daily_account_intent has no rows for today, falls back to prospect_companies so Command Center is not empty.
  */
 router.get('/overview', requireInternalUser, async (req, res) => {
   try {
@@ -415,11 +458,63 @@ router.get('/overview', requireInternalUser, async (req, res) => {
     const dateStr = today();
     const days = chart_range === '30d' ? 30 : 7;
 
-    const allDaiToday = await DailyAccountIntent.findAll({
+    let allDaiToday = await DailyAccountIntent.findAll({
       where: { date: dateStr },
       include: [{ model: ProspectCompany, as: 'prospectCompany', required: true }],
       order: [['intent_score', 'DESC']],
     });
+
+    if (allDaiToday.length === 0) {
+      const prospects = await ProspectCompany.findAll({
+        where: { intent_score: { [Op.gt]: 0 } },
+        order: [['intent_score', 'DESC']],
+        limit: 500,
+      });
+      allDaiToday = prospects.map((pc) => ({
+        intent_stage: pc.intent_stage || (pc.intent_score >= 50 ? 'Hot' : null),
+        surge_level: pc.surge_level || 'Normal',
+        top_lane: pc.top_lane || 'other',
+        intent_score: pc.intent_score,
+        key_events_7d_json: null,
+        prospectCompany: pc,
+        prospect_company_id: pc.id,
+      }));
+    }
+
+    if (allDaiToday.length === 0) {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const signalScores = await IntentSignal.findAll({
+        attributes: ['prospect_company_id', [sequelize.fn('SUM', sequelize.col('weight')), 'score']],
+        where: { occurred_at: { [Op.gte]: thirtyDaysAgo } },
+        group: ['prospect_company_id'],
+        raw: true,
+      });
+      const pcIds = signalScores.filter((r) => r.prospect_company_id).map((r) => r.prospect_company_id);
+      if (pcIds.length > 0) {
+        const prospects = await ProspectCompany.findAll({ where: { id: { [Op.in]: pcIds } } });
+        const scoreByPc = signalScores.reduce((acc, r) => {
+          acc[r.prospect_company_id] = Math.round(Number(r.score) || 0);
+          return acc;
+        }, {});
+        allDaiToday = prospects
+          .filter((pc) => (scoreByPc[pc.id] || 0) > 0)
+          .map((pc) => {
+            const intent_score = scoreByPc[pc.id] || 0;
+            return {
+              intent_stage: intent_score >= 50 ? 'Hot' : null,
+              surge_level: 'Normal',
+              top_lane: 'other',
+              intent_score,
+              key_events_7d_json: null,
+              prospectCompany: pc,
+              prospect_company_id: pc.id,
+            };
+          })
+          .sort((a, b) => b.intent_score - a.intent_score)
+          .slice(0, 500);
+      }
+    }
 
     const hotAccounts = allDaiToday.filter((d) => d.intent_stage === 'Hot');
     const surgingAccounts = allDaiToday.filter((d) => ['Surging', 'Exploding'].includes(d.surge_level || ''));
@@ -533,7 +628,7 @@ router.get('/queue', requireInternalUser, async (req, res) => {
     const items = [];
     const now = new Date();
 
-    const [daiToday, daiYesterday, leadRequestsRecent, allOperatorActions, missionsDue, missionsStale, missionsNewFromLr] = await Promise.all([
+    let [daiToday, daiYesterday, leadRequestsRecent, allOperatorActions, missionsDue, missionsStale, missionsNewFromLr] = await Promise.all([
       DailyAccountIntent.findAll({
         where: { date: dateStr },
         include: [{ model: ProspectCompany, as: 'prospectCompany', required: true }],
@@ -581,6 +676,62 @@ router.get('/queue', requireInternalUser, async (req, res) => {
         limit: 10,
       }),
     ]);
+
+    if (daiToday.length === 0) {
+      const prospects = await ProspectCompany.findAll({
+        where: { intent_score: { [Op.gt]: 0 } },
+        order: [['intent_score', 'DESC']],
+        limit: 500,
+      });
+      daiToday = prospects.map((pc) => ({
+        intent_stage: pc.intent_stage || (pc.intent_score >= 50 ? 'Hot' : null),
+        surge_level: pc.surge_level || 'Normal',
+        top_lane: pc.top_lane || 'other',
+        intent_score: pc.intent_score,
+        key_events_7d_json: pc.key_events_7d_json || null,
+        prospect_company_id: pc.id,
+        prospectCompany: pc,
+        updated_at: pc.score_updated_at || pc.updated_at,
+        created_at: pc.created_at,
+      }));
+    }
+
+    if (daiToday.length === 0) {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const signalScores = await IntentSignal.findAll({
+        attributes: ['prospect_company_id', [sequelize.fn('SUM', sequelize.col('weight')), 'score']],
+        where: { occurred_at: { [Op.gte]: thirtyDaysAgo } },
+        group: ['prospect_company_id'],
+        raw: true,
+      });
+      const pcIds = signalScores.filter((r) => r.prospect_company_id).map((r) => r.prospect_company_id);
+      if (pcIds.length > 0) {
+        const prospects = await ProspectCompany.findAll({ where: { id: { [Op.in]: pcIds } } });
+        const scoreByPc = signalScores.reduce((acc, r) => {
+          acc[r.prospect_company_id] = Math.round(Number(r.score) || 0);
+          return acc;
+        }, {});
+        daiToday = prospects
+          .filter((pc) => (scoreByPc[pc.id] || 0) > 0)
+          .map((pc) => {
+            const intent_score = scoreByPc[pc.id] || 0;
+            return {
+              intent_stage: intent_score >= 50 ? 'Hot' : null,
+              surge_level: 'Normal',
+              top_lane: 'other',
+              intent_score,
+              key_events_7d_json: null,
+              prospect_company_id: pc.id,
+              prospectCompany: pc,
+              updated_at: pc.score_updated_at || pc.updated_at,
+              created_at: pc.created_at,
+            };
+          })
+          .sort((a, b) => b.intent_score - a.intent_score)
+          .slice(0, 500);
+      }
+    }
 
     const snoozedPcIds = new Set();
     const snoozedLrIds = new Set();
@@ -2401,13 +2552,21 @@ router.post('/programs/:id/create-mission', requireInternalUser, async (req, res
 
 /**
  * POST /api/abm/jobs/recompute-intent
- * Manual trigger for ABM intent recompute job (internal only)
+ * Manual trigger for ABM intent recompute job (internal only).
+ * Body: { range_days?: number, account_keys?: string[] } — defaults range_days=30.
  */
 const abmIntentQueue = require('../../queues/abmIntentQueue');
 router.post('/jobs/recompute-intent', requireInternalUser, async (req, res) => {
   try {
-    const job = await abmIntentQueue.add('recompute-intent', {}, { removeOnComplete: true });
-    res.json({ message: 'Job enqueued', jobId: job.id });
+    const range_days = Math.min(Math.max(parseInt(req.body?.range_days, 10) || 30, 1), 365);
+    const account_keys = Array.isArray(req.body?.account_keys) ? req.body.account_keys : undefined;
+    const job = await abmIntentQueue.add('recompute-intent', { range_days, account_keys }, { removeOnComplete: true });
+    res.status(200).json({
+      ok: true,
+      started_at: new Date().toISOString(),
+      range_days,
+      jobId: job.id,
+    });
   } catch (err) {
     console.error('Error enqueueing ABM intent job:', err);
     res.status(500).json({ message: 'Failed to enqueue job' });

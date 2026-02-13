@@ -16,7 +16,8 @@ const {
 } = require('../../models');
 const registry = require('../registry');
 const scoring = require('../scoring');
-const { buildWhyHot, buildKeyEventsJson } = require('../scoring/whyHot');
+const { buildWhyHot, buildKeyEventsJson, buildEvidenceStrings } = require('../scoring/whyHot');
+const { isPersonalDomain } = require('../../utils/personalDomains');
 
 let posthogClient;
 try {
@@ -53,10 +54,11 @@ function applyEventRules(path, eventName, rules) {
 
 /**
  * Build events from intent_signals (fallback when PostHog not configured)
+ * @param {number} days - Window in days (default 30)
  */
-async function getEventsFromIntentSignals() {
+async function getEventsFromIntentSignals(days = 30) {
   const since = new Date();
-  since.setDate(since.getDate() - 30);
+  since.setDate(since.getDate() - Math.min(Math.max(parseInt(days, 10) || 30, 1), 365));
 
   const signals = await IntentSignal.findAll({
     where: { occurred_at: { [Op.gte]: since } },
@@ -66,7 +68,7 @@ async function getEventsFromIntentSignals() {
   const byAccount = {};
   for (const s of signals) {
     const domain = s.prospectCompany?.domain;
-    if (!domain) continue;
+    if (!domain || isPersonalDomain(domain)) continue;
     if (!byAccount[domain]) byAccount[domain] = [];
     const ageDays = (Date.now() - new Date(s.occurred_at)) / (24 * 60 * 60 * 1000);
     byAccount[domain].push({
@@ -83,17 +85,19 @@ async function getEventsFromIntentSignals() {
 
 /**
  * Build events from PostHog fetch + event rules
+ * @param {number} days - Window in days (default 30)
  */
-async function getEventsFromPostHog() {
-  if (!posthogClient) return {};
+async function getEventsFromPostHog(days = 30) {
+  const posthogEnabled = posthogClient && typeof posthogClient.isPostHogEnabled === 'function' && posthogClient.isPostHogEnabled();
+  if (!posthogEnabled) return getEventsFromIntentSignals(days);
   const rules = await registry.getEventRules();
 
   let rows;
   try {
-    rows = await posthogClient.fetchEventsForAbm(30);
+    rows = await posthogClient.fetchEventsForAbm(days);
   } catch (err) {
     console.warn('PostHog fetch failed, using intent_signals fallback:', err.message);
-    return getEventsFromIntentSignals();
+    return getEventsFromIntentSignals(days);
   }
 
   const byAccount = {};
@@ -101,7 +105,7 @@ async function getEventsFromPostHog() {
   for (const r of rows || []) {
     const arr = Array.isArray(r) ? r : [r.date, r.account_key, r.event, r.content_type, r.lane, r.distinct_id, r.pathname, r.timestamp];
     const accountKey = (arr[1] || '').toString().trim().toLowerCase();
-    if (!accountKey) continue;
+    if (!accountKey || isPersonalDomain(accountKey)) continue;
     const path = arr[6] || r.pathname || r.$current_url || '';
     const eventName = ((arr[2] || 'page_view') + '').replace('$pageview', 'page_view');
     const { content_type, lane, weight_override } = applyEventRules(path, eventName, rules);
@@ -140,25 +144,36 @@ function computeKeyEventsCounts(events7d) {
 
 /**
  * Main job entry
+ * @param {object} [options]
+ * @param {number} [options.range_days=30]
+ * @param {string[]} [options.account_keys] - If set, only process these account keys (still skip personal domains)
  */
-async function runRecomputeIntentJob() {
+async function runRecomputeIntentJob(options = {}) {
   const config = await registry.getActiveScoreConfig();
   if (!config) throw new Error('No active score config');
 
+  const rangeDays = Math.min(Math.max(parseInt(options.range_days, 10) || 30, 1), 365);
+  const accountKeysFilter = Array.isArray(options.account_keys) && options.account_keys.length > 0
+    ? new Set(options.account_keys.map((k) => String(k).trim().toLowerCase()))
+    : null;
+
   const weightsMap = await registry.getWeightsMap(config.id);
   const configJson = config.toJSON ? config.toJSON() : config;
+  const rules = await registry.getEventRules();
 
   let byAccount;
-  if (process.env.POSTHOG_API_KEY) {
-    byAccount = await getEventsFromPostHog();
+  const posthogEnabled = posthogClient && typeof posthogClient.isPostHogEnabled === 'function' && posthogClient.isPostHogEnabled();
+  if (posthogEnabled) {
+    byAccount = await getEventsFromPostHog(rangeDays);
   } else {
-    byAccount = await getEventsFromIntentSignals();
+    byAccount = await getEventsFromIntentSignals(rangeDays);
   }
 
   const today = new Date().toISOString().slice(0, 10);
 
   for (const [accountKey, events] of Object.entries(byAccount)) {
-    if (!accountKey) continue;
+    if (!accountKey || isPersonalDomain(accountKey)) continue;
+    if (accountKeysFilter && !accountKeysFilter.has(accountKey)) continue;
 
     let prospect = await ProspectCompany.findOne({ where: { domain: accountKey } });
     if (!prospect) {
@@ -200,6 +215,8 @@ async function runRecomputeIntentJob() {
     });
 
     const uniquePeople7d = new Set(events7d.map((e) => e.distinct_id || '')).size || 0;
+    const evidenceStrings = buildEvidenceStrings(keyEventsCounts, rules, 6);
+    const intentEvidence7d = evidenceStrings.length ? JSON.stringify(evidenceStrings) : null;
 
     let dai = await DailyAccountIntent.findOne({
       where: { prospect_company_id: prospect.id, date: today },
@@ -239,10 +256,11 @@ async function runRecomputeIntentJob() {
       score_updated_at: new Date(),
       score_7d_raw: result.raw_7d,
       score_30d_raw: result.raw_30d,
+      intent_evidence_7d: intentEvidence7d,
     });
   }
 
-  return { accountsProcessed: Object.keys(byAccount).length };
+  return { accountsProcessed: Object.keys(byAccount).length, range_days: rangeDays };
 }
 
 /**
@@ -301,6 +319,10 @@ async function recomputeAccountIntentForProspect(prospectCompanyId) {
     keyEventsCounts,
   });
 
+  const rules = await registry.getEventRules();
+  const evidenceStrings = buildEvidenceStrings(keyEventsCounts, rules, 6);
+  const intentEvidence7d = evidenceStrings.length ? JSON.stringify(evidenceStrings) : null;
+
   const today = new Date().toISOString().slice(0, 10);
   let dai = await DailyAccountIntent.findOne({
     where: { prospect_company_id: prospect.id, date: today },
@@ -340,6 +362,7 @@ async function recomputeAccountIntentForProspect(prospectCompanyId) {
     score_updated_at: new Date(),
     score_7d_raw: result.raw_7d,
     score_30d_raw: result.raw_30d,
+    intent_evidence_7d: intentEvidence7d,
   });
 }
 

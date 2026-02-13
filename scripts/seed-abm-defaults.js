@@ -140,11 +140,11 @@ async function seed() {
     { event_name: 'page_view', match_type: 'path_prefix', match_value: '/on-demand-vs-reserved-satellite-contacts', content_type: 'service_page', lane: 'Other', priority: 5 },
     { event_name: 'page_view', match_type: 'path_prefix', match_value: '/ground-station', content_type: 'service_page', lane: 'Other', priority: 6 },
     // --- Generic content types (priority 10+) ---
-    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/pricing', content_type: 'pricing', lane: 'Other', priority: 10 },
+    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/pricing', content_type: 'pricing', lane: 'Other', priority: 10, evidence_template: 'Viewed pricing ({count}x)' },
     { event_name: 'page_view', match_type: 'path_prefix', match_value: '/services', content_type: 'service_page', lane: 'Other', priority: 20 },
-    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/security', content_type: 'security', lane: 'Other', priority: 20 },
-    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/integrations', content_type: 'integrations', lane: 'Other', priority: 20 },
-    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/request-reservation', content_type: 'request_reservation', lane: 'Other', priority: 15 },
+    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/security', content_type: 'security', lane: 'Other', priority: 20, evidence_template: 'Viewed security ({count}x)' },
+    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/integrations', content_type: 'integrations', lane: 'Other', priority: 20, evidence_template: 'Viewed integrations ({count}x)' },
+    { event_name: 'page_view', match_type: 'path_prefix', match_value: '/request-reservation', content_type: 'request_reservation', lane: 'Other', priority: 15, evidence_template: 'Viewed request reservation ({count}x)' },
     { event_name: 'page_view', match_type: 'path_prefix', match_value: '/request', content_type: 'request_reservation', lane: 'Other', priority: 25 },
     { event_name: 'page_view', match_type: 'contains', match_value: 'case-study', content_type: 'case_study', lane: 'Other', priority: 30 },
     { event_name: 'page_view', match_type: 'path_prefix', match_value: '/docs', content_type: 'docs', lane: 'Other', priority: 40 },
@@ -163,9 +163,15 @@ async function seed() {
         priority: rule.priority,
         content_type: rule.content_type,
         lane: rule.lane,
+        evidence_template: rule.evidence_template || null,
       },
     });
-    await r.update({ priority: rule.priority, content_type: rule.content_type, lane: rule.lane });
+    await r.update({
+      priority: rule.priority,
+      content_type: rule.content_type,
+      lane: rule.lane,
+      ...(rule.evidence_template != null && { evidence_template: rule.evidence_template }),
+    });
   }
   console.log('Event rules seeded. Run `npm run abm:recompute` to refresh lane data.');
 

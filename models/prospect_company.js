@@ -55,6 +55,7 @@ ProspectCompany.init(
     score_updated_at: { type: DataTypes.DATE, allowNull: true },
     score_7d_raw: { type: DataTypes.FLOAT, allowNull: true },
     score_30d_raw: { type: DataTypes.FLOAT, allowNull: true },
+    intent_evidence_7d: { type: DataTypes.TEXT, allowNull: true },
     // Salesforce future
     salesforce_account_id: { type: DataTypes.STRING(64), allowNull: true },
     salesforce_account_url: { type: DataTypes.STRING(512), allowNull: true },

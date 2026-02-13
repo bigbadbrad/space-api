@@ -12,7 +12,8 @@ const connection = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', 
 
 const worker = new Worker('abm-intent-recompute', async (job) => {
   if (job.name === 'recompute-intent') {
-    const result = await runRecomputeIntentJob();
+    const options = job.data || {};
+    const result = await runRecomputeIntentJob(options);
     return result;
   }
 }, { connection });

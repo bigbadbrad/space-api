@@ -10,7 +10,7 @@ async function schedule() {
     'recompute-intent',
     {},
     {
-      repeat: { cron: '0 2 * * *' }, // 2am UTC daily
+      repeat: { cron: '15 3 * * *' }, // 03:15 UTC daily (Epic 4)
       removeOnComplete: true,
       jobId: 'abm-daily-recompute',
     }
