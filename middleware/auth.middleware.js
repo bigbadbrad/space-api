@@ -15,7 +15,7 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.SECRET);
-    
+
     // Load full user from database
     const user = await User.findByPk(decoded.id, {
       attributes: { exclude: ['password_hash'] },
@@ -28,6 +28,13 @@ const authenticateToken = async (req, res, next) => {
     req.user = user;
     next();
   } catch (err) {
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        message: 'Token expired',
+        code: 'TOKEN_EXPIRED',
+        expiredAt: err.expiredAt,
+      });
+    }
     console.error('Token verification failed:', err);
     return res.sendStatus(403); // Forbidden
   }

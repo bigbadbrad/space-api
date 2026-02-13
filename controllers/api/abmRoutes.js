@@ -1613,8 +1613,8 @@ router.get('/accounts/:id/people', requireInternalUser, async (req, res) => {
 
     const contacts = await Contact.findAll({
       where: { prospect_company_id: accountId },
-      attributes: ['id', 'email', 'first_name', 'last_name', 'title', 'status', 'last_seen_at'],
-      order: [['last_seen_at', 'DESC']],
+      attributes: ['id', 'email', 'first_name', 'last_name', 'title', 'status'],
+      order: [['updated_at', 'DESC']],
     });
 
     const contactIds = contacts.map((c) => c.id);
@@ -1637,6 +1637,77 @@ router.get('/accounts/:id/people', requireInternalUser, async (req, res) => {
       (process.env.POSTHOG_PERSONAL_API_KEY || process.env.POSTHOG_PROJECT_API_KEY)
     );
 
+    let anonymous_visitors = [];
+    let unmatched = [];
+
+    if (posthogConfigured) {
+      try {
+        const rangeMap = { 7: '7d', 30: '30d' };
+        const rangeStr = rangeMap[rangeDays] || '7d';
+        const { fetchPeopleDebugFromPostHog, fetchEventCountsByDistinctIds } = require('../../utils/posthogPeopleDebug');
+
+        const distinctIds = identities
+          .map((i) => (i.get ? i.get('identity_value') : i.identity_value))
+          .filter(Boolean);
+
+        if (distinctIds.length > 0) {
+          const byId = await fetchEventCountsByDistinctIds(distinctIds, { range: rangeStr, limit: 20 });
+          if (byId.length > 0) {
+            anonymous_visitors = byId.map((a) => ({
+              visitor_id: a.person_id,
+              label: a.person_label,
+              last_seen_at: a.last_seen_at,
+              events_7d: a.events_count ?? 0,
+              top_pages_7d: [],
+              top_events_7d: [],
+              lane_hint: null,
+            }));
+          } else {
+            const { visitorLabel } = require('../../utils/posthogPeopleDebug');
+            anonymous_visitors = distinctIds.slice(0, 10).map((did) => ({
+              visitor_id: did,
+              label: visitorLabel(did),
+              last_seen_at: null,
+              events_7d: 0,
+              top_pages_7d: [],
+              top_events_7d: [],
+              lane_hint: null,
+            }));
+          }
+        }
+
+        if (anonymous_visitors.length === 0) {
+          const { anonymous } = await fetchPeopleDebugFromPostHog({
+            range: rangeStr,
+            minEvents: 1,
+            includeUnmatched: false,
+            search: '',
+            limit: 200,
+            includeIdentified: true,
+          });
+          const domainNorm = (prospect.domain || '').toLowerCase().replace(/^www\./, '').split('/')[0];
+          const matchAccount = (a) => {
+            if (a.account_id != null && String(a.account_id) === String(accountId)) return true;
+            const d = (a.account_domain || '').toLowerCase().replace(/^www\./, '').split('/')[0];
+            return d && domainNorm && d === domainNorm;
+          };
+          anonymous_visitors = anonymous
+            .filter(matchAccount)
+            .map((a) => ({
+              visitor_id: a.person_id,
+              label: a.person_label,
+              last_seen_at: a.last_seen_at,
+              events_7d: a.events_count ?? 0,
+              top_pages_7d: [],
+              top_events_7d: [],
+              lane_hint: null,
+            }));
+        }
+      } catch (err) {
+        console.warn('Account people PostHog fetch failed:', err?.message || err);
+      }
+    }
+
     const payload = {
       account: {
         id: prospect.id,
@@ -1646,8 +1717,8 @@ router.get('/accounts/:id/people', requireInternalUser, async (req, res) => {
       },
       range_days: rangeDays,
       known_contacts,
-      anonymous_visitors: posthogConfigured ? [] : [],
-      unmatched: includeUnmatched ? [] : [],
+      anonymous_visitors,
+      unmatched,
       generated_at: new Date().toISOString(),
       posthog_configured: posthogConfigured,
     };
@@ -1659,6 +1730,135 @@ router.get('/accounts/:id/people', requireInternalUser, async (req, res) => {
     return res.json(payload);
   } catch (err) {
     console.error('Error fetching account people:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/abm/accounts/:id/people-activity
+ * Contact-centric: one row per contact with all their activity (anonymous + known).
+ * Each event includes identity: 'anonymous' | 'known' so the UI can show when they became known.
+ * Query: range_days (default 7).
+ */
+router.get('/accounts/:id/people-activity', requireInternalUser, async (req, res) => {
+  try {
+    const { id: accountId } = req.params;
+    const rangeDays = Math.min(30, Math.max(1, parseInt(req.query.range_days, 10) || 7));
+    const prospect = await ProspectCompany.findByPk(accountId, { attributes: ['id', 'name', 'domain'] });
+    if (!prospect) return res.status(404).json({ message: 'Account not found' });
+
+    const contacts = await Contact.findAll({
+      where: { prospect_company_id: accountId },
+      attributes: ['id', 'email', 'first_name', 'last_name', 'title'],
+    });
+    const contactIds = contacts.map((c) => c.id);
+    const identities = contactIds.length
+      ? await ContactIdentity.findAll({
+          where: { contact_id: contactIds, identity_type: 'posthog_distinct_id' },
+          attributes: ['contact_id', 'identity_value'],
+        })
+      : [];
+
+    const identifiedByContactId = new Map(identities.map((i) => [(i.get ? i.get('contact_id') : i.contact_id), (i.get ? i.get('identity_value') : i.identity_value)]));
+
+    const { fetchEventsByDistinctIds, getPersonDistinctIds } = require('../../utils/posthogPeopleDebug');
+    const contactByDistinctId = new Map();
+    const allDistinctIds = new Set();
+    for (const c of contacts) {
+      const cid = c.id;
+      const identifiedId = identifiedByContactId.get(cid);
+      if (!identifiedId) continue;
+      const personIds = await getPersonDistinctIds(identifiedId);
+      for (const did of personIds) {
+        contactByDistinctId.set(String(did), cid);
+        allDistinctIds.add(String(did));
+      }
+    }
+    const distinctIds = Array.from(allDistinctIds);
+
+    const payload = {
+      range_days: rangeDays,
+      people: [],
+      posthog_configured: !!(process.env.POSTHOG_HOST && (process.env.POSTHOG_PERSONAL_API_KEY || process.env.POSTHOG_PROJECT_API_KEY)),
+    };
+
+    const byContactId = {};
+    for (const c of contacts) {
+      const cid = c.id;
+      byContactId[cid] = {
+        contact_id: cid,
+        email: c.email || null,
+        first_name: c.first_name || null,
+        last_name: c.last_name || null,
+        title: c.title || null,
+        identified_distinct_id: identifiedByContactId.get(cid) || null,
+        events_count: 0,
+        last_seen_at: null,
+        events: [],
+        event_counts: {},
+      };
+    }
+
+    const IDENTIFY_BOUNDARY_EVENTS = ['$identify', 'identify', 'lead_request_submitted'];
+
+    if (distinctIds.length > 0) {
+      const rangeStr = rangeDays <= 7 ? '7d' : '30d';
+      const rawEvents = await fetchEventsByDistinctIds(distinctIds, { range: rangeStr, limit: 500 });
+
+      for (const e of rawEvents) {
+        const did = String(e.distinct_id);
+        const contactId = contactByDistinctId.get(did);
+        if (!contactId || !byContactId[contactId]) continue;
+        const rec = byContactId[contactId];
+        rec.events_count += 1;
+        if (!rec.last_seen_at || new Date(e.timestamp) > new Date(rec.last_seen_at)) {
+          rec.last_seen_at = e.timestamp;
+        }
+        rec.event_counts[e.event] = (rec.event_counts[e.event] || 0) + 1;
+        if (rec.events.length < 100) {
+          rec.events.push({
+            event: e.event,
+            event_display: e.event_display ?? e.event,
+            timestamp: e.timestamp,
+            path: e.path || null,
+            identity: 'unknown',
+          });
+        }
+      }
+
+      for (const cid of Object.keys(byContactId)) {
+        const rec = byContactId[cid];
+        if (rec.events.length === 0) continue;
+        const events = rec.events;
+        const byTimeAsc = [...events].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        const boundaryIdx = byTimeAsc.findIndex((ev) => IDENTIFY_BOUNDARY_EVENTS.includes(ev.event));
+        const cut = boundaryIdx >= 0 ? boundaryIdx : byTimeAsc.length;
+        byTimeAsc.forEach((ev, i) => {
+          ev.identity = i < cut ? 'anonymous' : 'known';
+        });
+        rec.events = byTimeAsc.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      }
+    }
+
+    payload.people = Object.values(byContactId).map((p) => ({
+      contact_id: p.contact_id,
+      email: p.email,
+      first_name: p.first_name,
+      last_name: p.last_name,
+      title: p.title,
+      identified_distinct_id: p.identified_distinct_id,
+      events_count: p.events_count,
+      last_seen_at: p.last_seen_at,
+      events: p.events,
+      top_events: Object.entries(p.event_counts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([name, count]) => `${name} (${count})`),
+    }));
+
+    return res.json(payload);
+  } catch (err) {
+    console.error('Error fetching account people-activity:', err);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -2001,6 +2201,7 @@ router.get('/people', requireInternalUser, async (req, res) => {
         : [];
       return {
         id: c.id,
+        account_id: c.prospect_company_id ?? c.prospectCompany?.id,
         display: c.first_name || c.last_name ? `${c.first_name || ''} ${c.last_name || ''}`.trim() : c.email || 'Anonymous',
         email: c.email,
         account_name: c.prospectCompany?.name,
