@@ -298,7 +298,7 @@ router.post('/', requireInternalUser, async (req, res) => {
     const mission = await Mission.create(missionData);
 
     if (lead_request_id) {
-      await LeadRequest.update({ mission_id: mission.id }, { where: { id: lead_request_id } });
+      await LeadRequest.update({ mission_id: mission.id, routing_status: 'promoted' }, { where: { id: lead_request_id } });
       await MissionActivity.create({
         mission_id: mission.id,
         type: 'linked_lead_request',

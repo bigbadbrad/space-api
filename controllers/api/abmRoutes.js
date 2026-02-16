@@ -1056,7 +1056,7 @@ router.patch('/lead-requests/:id', requireInternalUser, async (req, res) => {
       return res.status(404).json({ message: 'Lead request not found' });
     }
 
-    const allowedStatuses = ['new', 'routed', 'contacted', 'closed_won', 'closed_lost'];
+    const allowedStatuses = ['new', 'promoted', 'closed'];
 
     if (routing_status) {
       if (!allowedStatuses.includes(routing_status)) {
@@ -1189,10 +1189,8 @@ router.post('/lead-requests/:id/convert', requireInternalUser, async (req, res) 
       });
     }
 
-    // Mark lead as routed/closed_won by default if converting
-    leadRequest.routing_status = leadRequest.routing_status === 'closed_won'
-      ? 'closed_won'
-      : 'routed';
+    // Mark lead as closed when converting to customer
+    leadRequest.routing_status = 'closed';
     await leadRequest.save();
 
     res.json({
@@ -2284,7 +2282,7 @@ router.post('/lead-requests/:id/promote', requireInternalUser, async (req, res) 
       last_activity_at: new Date(),
     });
 
-    await lr.update({ mission_id: mission.id });
+    await lr.update({ mission_id: mission.id, routing_status: 'promoted' });
     await MissionActivity.create({
       mission_id: mission.id,
       type: 'linked_lead_request',

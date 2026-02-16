@@ -81,7 +81,7 @@ LeadRequest.init(
     // Scoring + routing
     lead_score: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     routing_status: {
-      type: DataTypes.ENUM('new', 'routed', 'contacted', 'closed_won', 'closed_lost'),
+      type: DataTypes.ENUM('new', 'promoted', 'closed'),
       allowNull: false,
       defaultValue: 'new',
     },
