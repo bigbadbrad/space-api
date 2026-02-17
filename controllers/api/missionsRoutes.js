@@ -9,6 +9,7 @@ const {
   MissionContact,
   MissionArtifact,
   MissionActivity,
+  MissionTask,
   ProspectCompany,
   Contact,
   LeadRequest,
@@ -20,6 +21,8 @@ const {
 } = require('../../models');
 const { Op } = require('sequelize');
 const sequelize = require('../../config/connection');
+const { logMissionActivity } = require('../../utils/missionActivity');
+const salesforcePushQueue = require('../../queues/salesforcePushQueue');
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -105,6 +108,55 @@ router.get('/summary', requireInternalUser, async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching missions summary:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * GET /api/abm/missions/work-queue
+ * Returns overdue tasks, due soon tasks, and missions needing qualification (for Work Queue page).
+ */
+router.get('/work-queue', requireInternalUser, async (req, res) => {
+  try {
+    const now = new Date();
+    const dueSoonEnd = new Date();
+    dueSoonEnd.setDate(dueSoonEnd.getDate() + 7);
+    const closedStages = ['won', 'lost', 'on_hold'];
+
+    const [overdueTasks, dueSoonTasks, missionsQualification] = await Promise.all([
+      MissionTask.findAll({
+        where: { status: 'open', due_at: { [Op.lt]: now } },
+        include: [{ model: Mission, as: 'mission', attributes: ['id', 'title'], required: true }],
+        order: [['due_at', 'ASC']],
+        limit: 50,
+      }),
+      MissionTask.findAll({
+        where: { status: 'open', due_at: { [Op.gte]: now, [Op.lte]: dueSoonEnd } },
+        include: [{ model: Mission, as: 'mission', attributes: ['id', 'title'], required: true }],
+        order: [['due_at', 'ASC']],
+        limit: 50,
+      }),
+      Mission.findAll({
+        where: {
+          stage: 'new',
+          [Op.or]: [
+            { lead_request_id: { [Op.ne]: null } },
+            { prospect_company_id: { [Op.ne]: null } },
+          ],
+        },
+        include: [{ model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'], required: false }],
+        attributes: ['id', 'title', 'stage', 'service_lane', 'lead_request_id'],
+        limit: 30,
+      }),
+    ]);
+
+    res.json({
+      overdue_tasks: overdueTasks.map((t) => ({ task: t.toJSON(), mission: t.mission ? { id: t.mission.id, title: t.mission.title } : null })),
+      due_soon_tasks: dueSoonTasks.map((t) => ({ task: t.toJSON(), mission: t.mission ? { id: t.mission.id, title: t.mission.title } : null })),
+      missions_needing_qualification: missionsQualification.map((m) => m.toJSON()),
+    });
+  } catch (err) {
+    console.error('Error fetching work queue:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -219,8 +271,33 @@ router.get('/', requireInternalUser, async (req, res) => {
       distinct: true,
     });
 
+    const missionIds = rows.map((m) => m.id);
+    const openTasks = missionIds.length
+      ? await MissionTask.findAll({
+          where: { mission_id: { [Op.in]: missionIds }, status: 'open' },
+          attributes: ['mission_id', 'due_at'],
+          raw: true,
+        })
+      : [];
+    const nextDueByMission = {};
+    const openCountByMission = {};
+    openTasks.forEach((t) => {
+      if (!openCountByMission[t.mission_id]) openCountByMission[t.mission_id] = 0;
+      openCountByMission[t.mission_id]++;
+      if (t.due_at && (!nextDueByMission[t.mission_id] || new Date(t.due_at) < new Date(nextDueByMission[t.mission_id]))) {
+        nextDueByMission[t.mission_id] = t.due_at;
+      }
+    });
+
+    const missions = rows.map((m) => {
+      const j = m.toJSON();
+      j.next_task_due_at = nextDueByMission[m.id] || null;
+      j.open_tasks_count = openCountByMission[m.id] || 0;
+      return j;
+    });
+
     res.json({
-      missions: rows,
+      missions,
       total: count,
       page: parseInt(page) || 1,
       limit: parseInt(limit) || 50,
@@ -299,19 +376,7 @@ router.post('/', requireInternalUser, async (req, res) => {
 
     if (lead_request_id) {
       await LeadRequest.update({ mission_id: mission.id, routing_status: 'promoted' }, { where: { id: lead_request_id } });
-      await MissionActivity.create({
-        mission_id: mission.id,
-        type: 'linked_lead_request',
-        body: 'Promoted from lead request',
-        meta_json: { lead_request_id },
-        created_by_user_id: req.user?.id,
-      });
-      await MissionActivity.create({
-        mission_id: mission.id,
-        type: 'note',
-        body: 'Procurement brief attached',
-        created_by_user_id: req.user?.id,
-      });
+      await logMissionActivity(mission.id, 'lead_request_promoted', { lead_request_id }, req.user?.id);
     }
 
     const full = await Mission.findByPk(mission.id, {
@@ -344,6 +409,7 @@ router.get('/:id', requireInternalUser, async (req, res) => {
         { model: MissionArtifact, as: 'artifacts', include: [{ model: User, as: 'createdBy', attributes: ['id', 'name', 'preferred_name'] }] },
         { model: MissionActivity, as: 'activities', include: [{ model: User, as: 'createdBy', attributes: ['id', 'name', 'preferred_name'] }], order: [['created_at', 'DESC']], limit: 50 },
         { model: Contact, as: 'contacts', through: { attributes: ['role'] }, attributes: ['id', 'email', 'first_name', 'last_name', 'title'] },
+        { model: MissionTask, as: 'tasks', include: [{ model: User, as: 'owner', attributes: ['id', 'name', 'preferred_name', 'email'] }], order: [['due_at', 'ASC'], ['created_at', 'ASC']] },
       ],
     });
     if (!mission) return res.status(404).json({ message: 'Mission not found' });
@@ -430,21 +496,10 @@ router.patch('/:id', requireInternalUser, async (req, res) => {
     updates.last_activity_at = new Date();
 
     if (updates.stage && updates.stage !== mission.stage) {
-      await MissionActivity.create({
-        mission_id: id,
-        type: 'status_change',
-        body: `Stage changed from ${mission.stage} to ${updates.stage}`,
-        meta_json: { from: mission.stage, to: updates.stage },
-        created_by_user_id: req.user?.id,
-      });
+      await logMissionActivity(id, 'stage_changed', { from: mission.stage, to: updates.stage }, req.user?.id);
     }
     if (updates.next_step && updates.next_step !== mission.next_step) {
-      await MissionActivity.create({
-        mission_id: id,
-        type: 'note',
-        body: `Next step: ${updates.next_step}`,
-        created_by_user_id: req.user?.id,
-      });
+      await logMissionActivity(id, 'note_added', { body: `Next step: ${updates.next_step}` }, req.user?.id);
     }
 
     await mission.update(updates);
@@ -476,13 +531,7 @@ router.post('/:id/close', requireInternalUser, async (req, res) => {
     if (!mission) return res.status(404).json({ message: 'Mission not found' });
 
     await mission.update({ stage: outcome, last_activity_at: new Date() });
-    await MissionActivity.create({
-      mission_id: id,
-      type: 'status_change',
-      body: reason ? `Closed as ${outcome}: ${reason}` : `Closed as ${outcome}`,
-      meta_json: { outcome, reason: reason || null },
-      created_by_user_id: req.user?.id,
-    });
+    await logMissionActivity(id, 'stage_changed', { to: outcome, reason: reason || null }, req.user?.id);
 
     const updated = await Mission.findByPk(id, {
       include: [
@@ -571,10 +620,51 @@ router.delete('/:id/artifacts/:artifactId', requireInternalUser, async (req, res
 });
 
 /**
- * POST /api/abm/missions/:id/ai-brief
- * Generate AI mission brief (optional Rev 2)
+ * GET /api/abm/missions/:id/artifacts?type=mission_brief
+ * Returns latest cached artifact of given type (e.g. mission_brief).
  */
+router.get('/:id/artifacts', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const type = req.query.type || 'mission_brief';
+    const mission = await Mission.findByPk(id, { attributes: ['id'] });
+    if (!mission) return res.status(404).json({ message: 'Mission not found' });
+    const artifact = await MissionArtifact.findOne({
+      where: { mission_id: id, type },
+      order: [['created_at', 'DESC']],
+    });
+    if (!artifact) return res.json({ artifact: null, content_md: null });
+    res.json({ artifact: artifact.toJSON(), content_md: artifact.content_md });
+  } catch (err) {
+    console.error('Error fetching mission artifacts:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 const { generateMissionBrief } = require('../../services/abmMissionBrief.service');
+
+/**
+ * POST /api/abm/missions/:id/generate-brief
+ * Generate or return cached mission brief (Rev 3); writes to mission_artifacts and activity.
+ */
+router.post('/:id/generate-brief', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mission = await Mission.findByPk(id);
+    if (!mission) return res.status(404).json({ message: 'Mission not found' });
+    const result = await generateMissionBrief(id, req.user?.id);
+    if (!result) return res.status(404).json({ message: 'Mission not found' });
+    res.json(result);
+  } catch (err) {
+    console.error('Error generating mission brief:', err);
+    res.status(500).json({ message: err.message || 'Failed to generate brief' });
+  }
+});
+
+/**
+ * POST /api/abm/missions/:id/ai-brief
+ * Legacy alias for generate-brief.
+ */
 router.post('/:id/ai-brief', requireInternalUser, async (req, res) => {
   try {
     const { id } = req.params;
@@ -597,17 +687,201 @@ router.post('/:id/activities', requireInternalUser, async (req, res) => {
     const { id } = req.params;
     const { type = 'note', body, meta_json } = req.body;
     if (!body) return res.status(400).json({ message: 'body is required' });
-    const activity = await MissionActivity.create({
-      mission_id: id,
-      type,
-      body,
-      meta_json: meta_json || null,
-      created_by_user_id: req.user?.id,
-    });
+    const eventType = type === 'note' ? 'note_added' : type;
+    const activity = await logMissionActivity(id, eventType, { body, ...(meta_json || {}) }, req.user?.id);
     await Mission.update({ last_activity_at: new Date() }, { where: { id } });
     res.status(201).json(activity);
   } catch (err) {
     console.error('Error adding activity:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+const ELIGIBLE_STAGES = ['qualified', 'solutioning', 'proposal', 'negotiation'];
+
+function isEligibleForSalesforcePush(mission, leadRequest, contactsCount) {
+  if (!mission.title) return { eligible: false, reason: 'Mission name/title required' };
+  if (!ELIGIBLE_STAGES.includes(mission.stage)) {
+    return { eligible: false, reason: 'Stage must be qualified, solutioning, proposal, or negotiation' };
+  }
+  const hasAccount = !!mission.prospect_company_id || (leadRequest && (leadRequest.organization_website || leadRequest.organization_name));
+  if (!hasAccount) return { eligible: false, reason: 'Linked account or lead request organization required' };
+  const hasContact = !!mission.primary_contact_id || (contactsCount > 0) || (leadRequest && leadRequest.work_email);
+  if (!hasContact) return { eligible: false, reason: 'Linked contact or lead request work email required' };
+  return { eligible: true };
+}
+
+/**
+ * POST /api/abm/missions/:id/push-to-salesforce
+ * Real-time one-way sync to Salesforce (manual; no auto-create).
+ * Queue/worker code remains available for bulk or async use.
+ */
+const { runPushMissionToSalesforce } = require('../../jobs/pushMissionToSalesforce');
+router.post('/:id/push-to-salesforce', requireInternalUser, async (req, res) => {
+  try {
+    const rawId = req.params.id;
+    const id = typeof rawId === 'string' ? rawId : (rawId && rawId.id) || null;
+    if (!id || id === '[object Object]') {
+      return res.status(400).json({ message: 'Mission ID required', success: false });
+    }
+    const mission = await Mission.findByPk(id, {
+      include: [
+        { model: LeadRequest, as: 'leadRequest', attributes: ['id', 'organization_name', 'organization_website', 'work_email'] },
+        { model: Contact, as: 'contacts', through: { attributes: [] }, attributes: ['id'] },
+      ],
+    });
+    if (!mission) return res.status(404).json({ message: 'Mission not found' });
+    const contactsCount = mission.contacts ? mission.contacts.length : 0;
+    const eligibility = isEligibleForSalesforcePush(mission, mission.leadRequest, contactsCount);
+    if (!eligibility.eligible) {
+      const msg = eligibility.reason ? `Mission not eligible: ${eligibility.reason}` : 'Mission not eligible for Salesforce push';
+      return res.status(400).json({ message: msg, success: false, reason: eligibility.reason });
+    }
+    await logMissionActivity(id, 'salesforce_push_requested', {}, req.user?.id);
+    const result = await runPushMissionToSalesforce({ missionId: id });
+    if (!result.success) {
+      console.error('[push-to-salesforce] Sync failed:', result.error);
+    }
+    const updated = await Mission.findByPk(id, {
+      attributes: ['id', 'salesforce_sync_status', 'salesforce_opportunity_id', 'salesforce_last_synced_at', 'salesforce_last_error'],
+    });
+    res.json({ message: result.success ? 'Synced to Salesforce' : 'Sync failed', success: result.success, mission: updated, error: result.error });
+  } catch (err) {
+    console.error('Error syncing to Salesforce:', err);
+    res.status(500).json({ message: err.message || 'Server error', success: false });
+  }
+});
+
+/**
+ * GET /api/abm/missions/:id/activity - Timeline (paginated, most recent first)
+ */
+router.get('/:id/activity', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+    const mission = await Mission.findByPk(id, { attributes: ['id'] });
+    if (!mission) return res.status(404).json({ message: 'Mission not found' });
+    const { count, rows } = await MissionActivity.findAndCountAll({
+      where: { mission_id: id },
+      include: [{ model: User, as: 'createdBy', attributes: ['id', 'name', 'preferred_name'] }],
+      order: [['created_at', 'DESC']],
+      limit,
+      offset: (page - 1) * limit,
+    });
+    res.json({ items: rows, total: count, page, limit });
+  } catch (err) {
+    console.error('Error fetching mission activity:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+const TASK_TYPES = ['qualify', 'research_account', 'create_brief', 'outreach', 'proposal', 'compliance', 'follow_up', 'other'];
+const TASK_STATUSES = ['open', 'done', 'canceled'];
+const TASK_PRIORITIES = ['low', 'med', 'high'];
+
+/**
+ * GET /api/abm/missions/:id/tasks
+ */
+router.get('/:id/tasks', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const mission = await Mission.findByPk(id, { attributes: ['id'] });
+    if (!mission) return res.status(404).json({ message: 'Mission not found' });
+    const statusFilter = req.query.status; // open | done | canceled
+    const where = { mission_id: id };
+    if (statusFilter && TASK_STATUSES.includes(statusFilter)) where.status = statusFilter;
+    const tasks = await MissionTask.findAll({
+      where,
+      include: [{ model: User, as: 'owner', attributes: ['id', 'name', 'preferred_name', 'email'] }],
+      order: [
+        [sequelize.literal('CASE WHEN due_at IS NULL THEN 1 ELSE 0 END'), 'ASC'],
+        [sequelize.literal('CASE WHEN due_at < NOW() THEN 0 ELSE 1 END'), 'ASC'],
+        ['due_at', 'ASC'],
+        ['created_at', 'ASC'],
+      ],
+    });
+    res.json({ items: tasks });
+  } catch (err) {
+    console.error('Error fetching mission tasks:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * POST /api/abm/missions/:id/tasks
+ */
+router.post('/:id/tasks', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, task_type, priority, owner_user_id, due_at, source_type, source_id } = req.body;
+    if (!title) return res.status(400).json({ message: 'title is required' });
+    const mission = await Mission.findByPk(id);
+    if (!mission) return res.status(404).json({ message: 'Mission not found' });
+    const type = TASK_TYPES.includes(task_type) ? task_type : 'other';
+    const task = await MissionTask.create({
+      mission_id: id,
+      title,
+      task_type: type,
+      priority: TASK_PRIORITIES.includes(priority) ? priority : 'med',
+      owner_user_id: owner_user_id || null,
+      due_at: due_at || null,
+      source_type: source_type || null,
+      source_id: source_id || null,
+    });
+    await logMissionActivity(id, 'task_created', { task_id: task.id, title: task.title }, req.user?.id);
+    await Mission.update({ last_activity_at: new Date() }, { where: { id } });
+    const withOwner = await MissionTask.findByPk(task.id, {
+      include: [{ model: User, as: 'owner', attributes: ['id', 'name', 'preferred_name', 'email'] }],
+    });
+    res.status(201).json(withOwner);
+  } catch (err) {
+    console.error('Error creating mission task:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * PATCH /api/abm/missions/:id/tasks/:taskId
+ */
+router.patch('/:id/tasks/:taskId', requireInternalUser, async (req, res) => {
+  try {
+    const { id, taskId } = req.params;
+    const task = await MissionTask.findOne({ where: { id: taskId, mission_id: id } });
+    if (!task) return res.status(404).json({ message: 'Task not found' });
+    const allowed = ['status', 'priority', 'owner_user_id', 'due_at', 'title'];
+    const updates = {};
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    }
+    const wasOpen = task.status === 'open';
+    await task.update(updates);
+    if (wasOpen && updates.status === 'done') {
+      await logMissionActivity(id, 'task_completed', { task_id: task.id, title: task.title }, req.user?.id);
+      await Mission.update({ last_activity_at: new Date() }, { where: { id } });
+    }
+    const withOwner = await MissionTask.findByPk(task.id, {
+      include: [{ model: User, as: 'owner', attributes: ['id', 'name', 'preferred_name', 'email'] }],
+    });
+    res.json(withOwner);
+  } catch (err) {
+    console.error('Error updating mission task:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * DELETE /api/abm/missions/:id/tasks/:taskId
+ */
+router.delete('/:id/tasks/:taskId', requireInternalUser, async (req, res) => {
+  try {
+    const { id, taskId } = req.params;
+    const task = await MissionTask.findOne({ where: { id: taskId, mission_id: id } });
+    if (!task) return res.status(404).json({ message: 'Task not found' });
+    await task.update({ status: 'canceled' });
+    res.json({ message: 'Canceled' });
+  } catch (err) {
+    console.error('Error deleting mission task:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });

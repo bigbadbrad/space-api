@@ -1,12 +1,13 @@
 /**
- * ABM Rev 2: AI Mission Brief generation
- * Similar to account summary but focused on opportunity, what's missing, next steps.
+ * ABM Rev 2/3: AI Mission Brief generation with caching in mission_artifacts.
  */
+const crypto = require('crypto');
 const OpenAI = require('openai');
 const registry = require('../abm/registry');
 const {
   Mission,
-  MissionActivity,
+  MissionArtifact,
+  MissionTask,
   ProspectCompany,
   Contact,
   LeadRequest,
@@ -14,6 +15,7 @@ const {
   DailyAccountIntent,
 } = require('../models');
 const { Op } = require('sequelize');
+const { logMissionActivity } = require('../utils/missionActivity');
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -33,13 +35,19 @@ const FALLBACK_USER = `Generate a mission brief for this opportunity. Input data
 
 Produce a concise brief (max 250 words) covering: opportunity summary, what we know, gaps/what's missing, recommended next steps.`;
 
+function inputHash(inputJson) {
+  return crypto.createHash('sha256').update(JSON.stringify(inputJson)).digest('hex');
+}
+
+const BRIEF_MAX_AGE_DAYS = 7;
+
 async function generateMissionBrief(missionId, userId = null) {
   const mission = await Mission.findByPk(missionId, {
     include: [
       { model: ProspectCompany, as: 'prospectCompany', attributes: ['id', 'name', 'domain'] },
       { model: Contact, as: 'primaryContact', attributes: ['id', 'email', 'first_name', 'last_name', 'title'] },
       { model: LeadRequest, as: 'leadRequest', attributes: ['id', 'organization_name', 'service_needed', 'created_at', 'payload_json'] },
-      { model: MissionActivity, as: 'activities', attributes: ['id', 'type', 'body', 'created_at'], order: [['created_at', 'DESC']], limit: 10 },
+      { model: MissionTask, as: 'tasks', where: { status: 'open' }, required: false, attributes: ['id', 'title', 'due_at'], order: [['due_at', 'ASC']], limit: 3 },
     ],
   });
   if (!mission) return null;
@@ -75,10 +83,13 @@ async function generateMissionBrief(missionId, userId = null) {
     });
   }
 
+  const nextTasks = (mission.tasks || []).slice(0, 3).map((t) => ({ title: t.title, due_at: t.due_at }));
+
   const inputJson = {
     mission: {
       id: mission.id,
       title: mission.title,
+      stage: mission.stage,
       service_lane: mission.service_lane,
       mission_type: mission.mission_type,
       mission_pattern: mission.mission_pattern,
@@ -91,7 +102,6 @@ async function generateMissionBrief(missionId, userId = null) {
       readiness_confidence: mission.readiness_confidence,
       funding_status: mission.funding_status,
       budget_band: mission.budget_band,
-      stage: mission.stage,
       priority: mission.priority,
       confidence: mission.confidence,
       next_step: mission.next_step,
@@ -110,8 +120,24 @@ async function generateMissionBrief(missionId, userId = null) {
     } : null,
     account_summary: accountSummary,
     recent_signals: recentSignals.map((s) => ({ event_name: s.event_name, occurred_at: s.occurred_at, content_type: s.content_type })),
-    recent_activities: (mission.activities || []).slice(0, 5).map((a) => ({ type: a.type, body: a.body?.slice(0, 200), created_at: a.created_at })),
+    next_tasks: nextTasks,
   };
+
+  const hash = inputHash(inputJson);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - BRIEF_MAX_AGE_DAYS);
+  const cached = await MissionArtifact.findOne({
+    where: {
+      mission_id: missionId,
+      type: 'mission_brief',
+      input_hash: hash,
+      created_at: { [Op.gte]: cutoff },
+    },
+    order: [['created_at', 'DESC']],
+  });
+  if (cached && cached.content_md) {
+    return { summary_md: cached.content_md, cached: true, artifact_id: cached.id };
+  }
 
   const template = await registry.getPromptTemplate({
     lane: mission.service_lane || '*',
@@ -136,14 +162,16 @@ async function generateMissionBrief(missionId, userId = null) {
 
   const summaryMd = res.choices[0]?.message?.content?.trim() || '';
 
-  await MissionActivity.create({
+  await MissionArtifact.create({
     mission_id: missionId,
-    type: 'ai_brief',
-    body: summaryMd,
-    meta_json: { model: AI_MODEL, prompt_template_id: template?.id || null },
+    type: 'mission_brief',
+    content_md: summaryMd,
+    input_hash: hash,
+    model_name: AI_MODEL,
     created_by_user_id: userId,
   });
 
+  await logMissionActivity(missionId, 'brief_generated', { model: AI_MODEL, input_hash: hash }, userId);
   await Mission.update({ last_activity_at: new Date() }, { where: { id: missionId } });
 
   return { summary_md: summaryMd, cached: false };

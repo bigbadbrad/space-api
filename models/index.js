@@ -22,6 +22,7 @@ const Mission = require('./mission');
 const MissionContact = require('./mission_contact');
 const MissionArtifact = require('./mission_artifact');
 const MissionActivity = require('./mission_activity');
+const MissionTask = require('./mission_task');
 const AbmMissionTemplate = require('./abm_mission_template');
 const ProcurementProgram = require('./procurement_program');
 const ProgramAccountLink = require('./program_account_link');
@@ -211,6 +212,10 @@ Mission.hasMany(MissionArtifact, { foreignKey: 'mission_id', as: 'artifacts' });
 MissionArtifact.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
 Mission.hasMany(MissionActivity, { foreignKey: 'mission_id', as: 'activities' });
 MissionActivity.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.hasMany(MissionTask, { foreignKey: 'mission_id', as: 'tasks' });
+MissionTask.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+MissionTask.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
+User.hasMany(MissionTask, { foreignKey: 'owner_user_id', as: 'missionTasks' });
 Mission.belongsToMany(Contact, { through: MissionContact, foreignKey: 'mission_id', otherKey: 'contact_id', as: 'contacts' });
 Contact.belongsToMany(Mission, { through: MissionContact, foreignKey: 'contact_id', otherKey: 'mission_id', as: 'missions' });
 MissionContact.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
@@ -308,6 +313,7 @@ module.exports = {
   MissionContact,
   MissionArtifact,
   MissionActivity,
+  MissionTask,
   AbmMissionTemplate,
   ProcurementProgram,
   ProgramAccountLink,

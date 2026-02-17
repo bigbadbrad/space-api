@@ -47,8 +47,11 @@ Mission.init(
     next_step_due_at: { type: DataTypes.DATE, allowNull: true },
     last_activity_at: { type: DataTypes.DATE, allowNull: true },
     salesforce_opportunity_id: { type: DataTypes.STRING(64), allowNull: true },
+    salesforce_account_id: { type: DataTypes.STRING(64), allowNull: true },
     salesforce_campaign_id: { type: DataTypes.STRING(64), allowNull: true },
+    salesforce_sync_status: { type: DataTypes.STRING(32), allowNull: true },
     salesforce_last_synced_at: { type: DataTypes.DATE, allowNull: true },
+    salesforce_last_error: { type: DataTypes.TEXT, allowNull: true },
   },
   {
     sequelize,
