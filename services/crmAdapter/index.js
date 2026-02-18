@@ -170,6 +170,78 @@ async function updateRecord(instanceUrl, accessToken, sobject, id, body) {
 }
 
 /**
+ * @param {string} instanceUrl
+ * @param {string} accessToken
+ * @param {string} soql
+ * @returns {Promise<{ records: Array<{ Id: string }> }>}
+ */
+async function query(instanceUrl, accessToken, soql) {
+  const url = `${instanceUrl}/services/data/${SF_API_VERSION}/query?q=${encodeURIComponent(soql)}`;
+  const res = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: 15000,
+  });
+  return res.data;
+}
+
+/**
+ * Find or create a Contact on the Account. Returns contact Id or null if no contact info.
+ * @param {string} instanceUrl
+ * @param {string} accessToken
+ * @param {string} accountId
+ * @param {{ email?: string; first_name?: string; last_name?: string; title?: string }} contactInfo
+ * @returns {Promise<string | null>}
+ */
+async function findOrCreateContact(instanceUrl, accessToken, accountId, contactInfo) {
+  const email = (contactInfo?.email || contactInfo?.Email || '').trim();
+  const lastName = (contactInfo?.last_name ?? contactInfo?.LastName ?? 'Contact').trim() || 'Contact';
+  const firstName = (contactInfo?.first_name ?? contactInfo?.FirstName ?? '').trim();
+  const title = (contactInfo?.title ?? contactInfo?.Title ?? '').trim();
+  if (!accountId) return null;
+
+  if (email) {
+    const q = `SELECT Id FROM Contact WHERE AccountId = '${accountId.replace(/'/g, "\\'")}' AND Email = '${email.replace(/'/g, "\\'")}' LIMIT 1`;
+    try {
+      const data = await query(instanceUrl, accessToken, q);
+      if (data.records && data.records.length > 0) {
+        return data.records[0].Id;
+      }
+    } catch (_) { /* ignore query errors, create below */ }
+  }
+
+  const contactFields = {
+    AccountId: accountId,
+    LastName: lastName,
+    ...(firstName && { FirstName: firstName }),
+    ...(email && { Email: email }),
+    ...(title && { Title: title }),
+  };
+  const contactId = await createRecord(instanceUrl, accessToken, 'Contact', contactFields);
+  return contactId;
+}
+
+/**
+ * Link Contact to Opportunity as primary role. Idempotent: creates role if missing.
+ * @param {string} instanceUrl
+ * @param {string} accessToken
+ * @param {string} opportunityId
+ * @param {string} contactId
+ */
+async function linkContactToOpportunity(instanceUrl, accessToken, opportunityId, contactId) {
+  const q = `SELECT Id FROM OpportunityContactRole WHERE OpportunityId = '${opportunityId.replace(/'/g, "\\'")}' AND ContactId = '${contactId.replace(/'/g, "\\'")}' LIMIT 1`;
+  try {
+    const data = await query(instanceUrl, accessToken, q);
+    if (data.records && data.records.length > 0) return;
+  } catch (_) { /* continue to create */ }
+  await createRecord(instanceUrl, accessToken, 'OpportunityContactRole', {
+    OpportunityId: opportunityId,
+    ContactId: contactId,
+    Role: 'Decision Maker',
+    IsPrimary: true,
+  });
+}
+
+/**
  * Map mission stage to Salesforce StageName (picklist). Use as-is if org uses same values; else extend mapping.
  * @param {string} stage
  * @returns {string}
@@ -203,6 +275,7 @@ async function pushMission(missionPayload) {
     service_lane,
     prospectCompany,
     leadRequest,
+    primaryContact,
     salesforce_opportunity_id: existingOpportunityId,
     salesforce_account_id: existingAccountId,
   } = missionPayload || {};
@@ -270,6 +343,22 @@ async function pushMission(missionPayload) {
     }
   }
 
+  const contactInfo = primaryContact
+    ? { email: primaryContact.email, first_name: primaryContact.first_name, last_name: primaryContact.last_name, title: primaryContact.title }
+    : leadRequest?.work_email
+      ? { email: leadRequest.work_email, first_name: '', last_name: 'Contact', title: '' }
+      : null;
+  const hasContactInfo = contactInfo && (contactInfo.email || contactInfo.first_name || (contactInfo.last_name && contactInfo.last_name !== 'Contact'));
+  let contactId = null;
+  if (hasContactInfo) {
+    try {
+      contactId = await findOrCreateContact(instanceUrl, accessToken, accountId, contactInfo);
+    } catch (err) {
+      const msg = err.response?.data?.[0]?.message || err.message || String(err);
+      throw new Error(`Salesforce Contact create failed: ${msg}`);
+    }
+  }
+
   const opportunityFields = {
     Name: opportunityName,
     AccountId: accountId,
@@ -284,6 +373,11 @@ async function pushMission(missionPayload) {
   if (existingOpportunityId) {
     try {
       await updateRecord(instanceUrl, accessToken, 'Opportunity', existingOpportunityId, opportunityFields);
+      if (contactId) {
+        try {
+          await linkContactToOpportunity(instanceUrl, accessToken, existingOpportunityId, contactId);
+        } catch (_) { /* non-fatal */ }
+      }
       return { opportunityId: existingOpportunityId, accountId };
     } catch (err) {
       const msg = err.response?.data?.[0]?.message || err.message || String(err);
@@ -293,6 +387,11 @@ async function pushMission(missionPayload) {
 
   try {
     const opportunityId = await createRecord(instanceUrl, accessToken, 'Opportunity', opportunityFields);
+    if (contactId) {
+      try {
+        await linkContactToOpportunity(instanceUrl, accessToken, opportunityId, contactId);
+      } catch (_) { /* non-fatal */ }
+    }
     return { opportunityId, accountId };
   } catch (err) {
     const msg = err.response?.data?.[0]?.message || err.message || String(err);
