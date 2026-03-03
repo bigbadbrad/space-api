@@ -1,31 +1,26 @@
 'use strict';
 
 /**
- * ABM Rev 2: Create mission_artifacts table (spec links, RFPs, etc.)
+ * Pursuits v2 — pursuit_activities (append-only event log)
  */
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.createTable('mission_artifacts', {
+    await queryInterface.createTable('pursuit_activities', {
       id: {
         type: Sequelize.UUID,
         allowNull: false,
         primaryKey: true,
         defaultValue: Sequelize.UUIDV4,
       },
-      mission_id: {
+      pursuit_id: {
         type: Sequelize.UUID,
         allowNull: false,
-        references: { model: 'missions', key: 'id' },
+        references: { model: 'pursuits', key: 'id' },
         onUpdate: 'CASCADE',
         onDelete: 'CASCADE',
       },
-      type: {
-        type: Sequelize.STRING(64),
-        allowNull: false,
-      },
-      title: { type: Sequelize.STRING(512), allowNull: true },
-      url: { type: Sequelize.STRING(1024), allowNull: true },
-      storage_key: { type: Sequelize.STRING(512), allowNull: true },
+      type: { type: Sequelize.STRING(64), allowNull: false },
+      body: { type: Sequelize.TEXT, allowNull: true },
       meta_json: { type: Sequelize.JSON, allowNull: true },
       created_by_user_id: {
         type: Sequelize.UUID,
@@ -39,6 +34,6 @@ module.exports = {
   },
 
   async down(queryInterface) {
-    await queryInterface.dropTable('mission_artifacts');
+    await queryInterface.dropTable('pursuit_activities');
   },
 };

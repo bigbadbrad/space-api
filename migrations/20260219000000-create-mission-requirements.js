@@ -1,11 +1,12 @@
 'use strict';
 
 /**
- * ABM Rev 3: Mission tasks (work queue, due dates, types)
+ * Option A: mission_requirements = editable working copy of procurement brief.
+ * LeadRequest stays immutable; when we "Promote to Mission" we clone into here.
  */
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.createTable('mission_tasks', {
+    await queryInterface.createTable('mission_requirements', {
       id: {
         type: Sequelize.UUID,
         allowNull: false,
@@ -18,38 +19,33 @@ module.exports = {
         references: { model: 'missions', key: 'id' },
         onUpdate: 'CASCADE',
         onDelete: 'CASCADE',
+        unique: true,
       },
-      title: { type: Sequelize.STRING(512), allowNull: false },
-      task_type: {
-        type: Sequelize.STRING(32),
+      brief_json: {
+        type: Sequelize.JSON,
         allowNull: false,
+        comment: 'Working copy of the procurement brief (cloned from lead_request on promote)',
       },
-      status: {
-        type: Sequelize.STRING(16),
-        allowNull: false,
-        defaultValue: 'open',
+      source_lead_request_id: {
+        type: Sequelize.UUID,
+        allowNull: true,
+        references: { model: 'lead_requests', key: 'id' },
+        onUpdate: 'CASCADE',
+        onDelete: 'SET NULL',
       },
-      priority: {
-        type: Sequelize.STRING(16),
-        allowNull: false,
-        defaultValue: 'med',
-      },
-      owner_user_id: {
+      edited_by_user_id: {
         type: Sequelize.UUID,
         allowNull: true,
         references: { model: 'users', key: 'id' },
         onUpdate: 'CASCADE',
         onDelete: 'SET NULL',
       },
-      due_at: { type: Sequelize.DATE, allowNull: true },
-      source_type: { type: Sequelize.STRING(32), allowNull: true },
-      source_id: { type: Sequelize.STRING(64), allowNull: true },
       created_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.fn('NOW') },
       updated_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.fn('NOW') },
     });
   },
 
   async down(queryInterface) {
-    await queryInterface.dropTable('mission_tasks');
+    await queryInterface.dropTable('mission_requirements');
   },
 };

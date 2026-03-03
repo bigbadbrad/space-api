@@ -26,6 +26,8 @@ const {
   ProgramItemNote,
   ProgramItemAccountLink,
   ProgramItemMissionLink,
+  Pursuit,
+  PursuitLeadRequestLink,
 } = require('../../models');
 const { buildProgramDetailView } = require('../../services/programDetailView.service');
 const { buildProgramItemDetailView } = require('../../services/programItemDetailView.service');
@@ -2238,6 +2240,9 @@ router.post('/accounts/:id/ai-summary', requireInternalUser, async (req, res) =>
 // Missions (ABM Rev 2)
 const missionsRoutes = require('./missionsRoutes');
 router.use('/missions', missionsRoutes);
+// Pursuits v2 (Pre-Mission Workspaces)
+const pursuitsRoutes = require('./pursuitsRoutes');
+router.use('/pursuits', pursuitsRoutes);
 
 /**
  * POST /api/abm/lead-requests/:id/promote
@@ -2283,6 +2288,10 @@ router.post('/lead-requests/:id/promote', requireInternalUser, async (req, res) 
     });
 
     await lr.update({ mission_id: mission.id, routing_status: 'promoted' });
+    const pursuitLinks = await PursuitLeadRequestLink.findAll({ where: { lead_request_id: lr.id }, attributes: ['pursuit_id'] });
+    for (const pl of pursuitLinks) {
+      await Pursuit.update({ mission_id: mission.id, status: 'converted' }, { where: { id: pl.pursuit_id } });
+    }
     await MissionActivity.create({
       mission_id: mission.id,
       type: 'linked_lead_request',

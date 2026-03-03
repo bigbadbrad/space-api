@@ -1,29 +1,26 @@
 'use strict';
 
 /**
- * ABM Rev 3: Mission tasks (work queue, due dates, types)
+ * Pursuits v2 — pursuit_tasks (same shape as mission_tasks)
  */
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.createTable('mission_tasks', {
+    await queryInterface.createTable('pursuit_tasks', {
       id: {
         type: Sequelize.UUID,
         allowNull: false,
         primaryKey: true,
         defaultValue: Sequelize.UUIDV4,
       },
-      mission_id: {
+      pursuit_id: {
         type: Sequelize.UUID,
         allowNull: false,
-        references: { model: 'missions', key: 'id' },
+        references: { model: 'pursuits', key: 'id' },
         onUpdate: 'CASCADE',
         onDelete: 'CASCADE',
       },
       title: { type: Sequelize.STRING(512), allowNull: false },
-      task_type: {
-        type: Sequelize.STRING(32),
-        allowNull: false,
-      },
+      task_type: { type: Sequelize.STRING(32), allowNull: false },
       status: {
         type: Sequelize.STRING(16),
         allowNull: false,
@@ -50,6 +47,6 @@ module.exports = {
   },
 
   async down(queryInterface) {
-    await queryInterface.dropTable('mission_tasks');
+    await queryInterface.dropTable('pursuit_tasks');
   },
 };

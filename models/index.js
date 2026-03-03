@@ -23,6 +23,7 @@ const MissionContact = require('./mission_contact');
 const MissionArtifact = require('./mission_artifact');
 const MissionActivity = require('./mission_activity');
 const MissionTask = require('./mission_task');
+const MissionRequirements = require('./mission_requirements');
 const AbmMissionTemplate = require('./abm_mission_template');
 const ProcurementProgram = require('./procurement_program');
 const ProgramAccountLink = require('./program_account_link');
@@ -39,6 +40,16 @@ const ProgramItem = require('./program_item');
 const ProgramItemNote = require('./program_item_note');
 const ProgramItemAccountLink = require('./program_item_account_link');
 const ProgramItemMissionLink = require('./program_item_mission_link');
+const Pursuit = require('./pursuit');
+const PursuitProgramLink = require('./pursuit_program_link');
+const PursuitLeadRequestLink = require('./pursuit_lead_request_link');
+const PursuitIntelRun = require('./pursuit_intel_run');
+const PursuitIntelSnapshot = require('./pursuit_intel_snapshot');
+const PursuitStakeholder = require('./pursuit_stakeholder');
+const PursuitTask = require('./pursuit_task');
+const PursuitActivity = require('./pursuit_activity');
+const EnrichmentJob = require('./enrichment_job');
+const EnrichmentSource = require('./enrichment_source');
 
 // -------------------------------------
 //  DEFINE MODEL RELATIONSHIPS
@@ -215,6 +226,10 @@ MissionActivity.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
 Mission.hasMany(MissionTask, { foreignKey: 'mission_id', as: 'tasks' });
 MissionTask.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
 MissionTask.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
+Mission.hasOne(MissionRequirements, { foreignKey: 'mission_id', as: 'missionRequirements' });
+MissionRequirements.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+MissionRequirements.belongsTo(LeadRequest, { foreignKey: 'source_lead_request_id', as: 'sourceLeadRequest' });
+MissionRequirements.belongsTo(User, { foreignKey: 'edited_by_user_id', as: 'editedBy' });
 User.hasMany(MissionTask, { foreignKey: 'owner_user_id', as: 'missionTasks' });
 Mission.belongsToMany(Contact, { through: MissionContact, foreignKey: 'mission_id', otherKey: 'contact_id', as: 'contacts' });
 Contact.belongsToMany(Mission, { through: MissionContact, foreignKey: 'contact_id', otherKey: 'mission_id', as: 'missions' });
@@ -289,6 +304,43 @@ ProgramItemMissionLink.belongsTo(User, { foreignKey: 'created_by_user_id', as: '
 ProgramItem.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
 User.hasMany(ProgramItem, { foreignKey: 'owner_user_id', as: 'ownedProgramItems' });
 
+// Pursuits v2 (Pre-Mission Workspaces)
+Pursuit.belongsTo(ProspectCompany, { foreignKey: 'prospect_company_id', as: 'prospectCompany' });
+ProspectCompany.hasMany(Pursuit, { foreignKey: 'prospect_company_id', as: 'pursuits' });
+Pursuit.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
+User.hasMany(Pursuit, { foreignKey: 'owner_user_id', as: 'ownedPursuits' });
+Pursuit.belongsTo(Mission, { foreignKey: 'mission_id', as: 'mission' });
+Mission.hasOne(Pursuit, { foreignKey: 'mission_id', as: 'pursuit' });
+Pursuit.hasMany(PursuitProgramLink, { foreignKey: 'pursuit_id', as: 'programLinks' });
+PursuitProgramLink.belongsTo(Pursuit, { foreignKey: 'pursuit_id', as: 'pursuit' });
+PursuitProgramLink.belongsTo(ProgramItem, { foreignKey: 'program_item_id', as: 'programItem' });
+ProgramItem.hasMany(PursuitProgramLink, { foreignKey: 'program_item_id', as: 'pursuitLinks' });
+Pursuit.hasMany(PursuitLeadRequestLink, { foreignKey: 'pursuit_id', as: 'leadRequestLinks' });
+PursuitLeadRequestLink.belongsTo(Pursuit, { foreignKey: 'pursuit_id', as: 'pursuit' });
+PursuitLeadRequestLink.belongsTo(LeadRequest, { foreignKey: 'lead_request_id', as: 'leadRequest' });
+LeadRequest.hasMany(PursuitLeadRequestLink, { foreignKey: 'lead_request_id', as: 'pursuitLinks' });
+Pursuit.hasMany(PursuitIntelRun, { foreignKey: 'pursuit_id', as: 'intelRuns' });
+PursuitIntelRun.belongsTo(Pursuit, { foreignKey: 'pursuit_id', as: 'pursuit' });
+Pursuit.hasMany(PursuitIntelSnapshot, { foreignKey: 'pursuit_id', as: 'intelSnapshots' });
+PursuitIntelSnapshot.belongsTo(Pursuit, { foreignKey: 'pursuit_id', as: 'pursuit' });
+Pursuit.hasMany(PursuitStakeholder, { foreignKey: 'pursuit_id', as: 'stakeholders' });
+PursuitStakeholder.belongsTo(Pursuit, { foreignKey: 'pursuit_id', as: 'pursuit' });
+PursuitStakeholder.belongsTo(Contact, { foreignKey: 'contact_id', as: 'contact' });
+Contact.hasMany(PursuitStakeholder, { foreignKey: 'contact_id', as: 'pursuitStakeholders' });
+Pursuit.hasMany(PursuitTask, { foreignKey: 'pursuit_id', as: 'tasks' });
+PursuitTask.belongsTo(Pursuit, { foreignKey: 'pursuit_id', as: 'pursuit' });
+PursuitTask.belongsTo(User, { foreignKey: 'owner_user_id', as: 'owner' });
+User.hasMany(PursuitTask, { foreignKey: 'owner_user_id', as: 'pursuitTasks' });
+Pursuit.hasMany(PursuitActivity, { foreignKey: 'pursuit_id', as: 'activities' });
+PursuitActivity.belongsTo(Pursuit, { foreignKey: 'pursuit_id', as: 'pursuit' });
+PursuitActivity.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdBy' });
+User.hasMany(PursuitActivity, { foreignKey: 'created_by_user_id', as: 'pursuitActivities' });
+
+EnrichmentJob.belongsTo(Pursuit, { foreignKey: 'triggered_by_pursuit_id', as: 'triggeredByPursuit' });
+Pursuit.hasMany(EnrichmentJob, { foreignKey: 'triggered_by_pursuit_id', as: 'enrichmentJobs' });
+EnrichmentJob.hasMany(EnrichmentSource, { foreignKey: 'enrichment_job_id', as: 'sources' });
+EnrichmentSource.belongsTo(EnrichmentJob, { foreignKey: 'enrichment_job_id', as: 'enrichmentJob' });
+
 module.exports = {
   User,
   ApiKey,
@@ -314,6 +366,7 @@ module.exports = {
   MissionArtifact,
   MissionActivity,
   MissionTask,
+  MissionRequirements,
   AbmMissionTemplate,
   ProcurementProgram,
   ProgramAccountLink,
@@ -330,4 +383,14 @@ module.exports = {
   ProgramItemNote,
   ProgramItemAccountLink,
   ProgramItemMissionLink,
+  Pursuit,
+  PursuitProgramLink,
+  PursuitLeadRequestLink,
+  PursuitIntelRun,
+  PursuitIntelSnapshot,
+  PursuitStakeholder,
+  PursuitTask,
+  PursuitActivity,
+  EnrichmentJob,
+  EnrichmentSource,
 };

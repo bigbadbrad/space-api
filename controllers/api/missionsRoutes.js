@@ -10,6 +10,7 @@ const {
   MissionArtifact,
   MissionActivity,
   MissionTask,
+  MissionRequirements,
   ProspectCompany,
   Contact,
   LeadRequest,
@@ -377,6 +378,14 @@ router.post('/', requireInternalUser, async (req, res) => {
     if (lead_request_id) {
       await LeadRequest.update({ mission_id: mission.id, routing_status: 'promoted' }, { where: { id: lead_request_id } });
       await logMissionActivity(mission.id, 'lead_request_promoted', { lead_request_id }, req.user?.id);
+      const lr = await LeadRequest.findByPk(lead_request_id, { attributes: ['payload_json'] });
+      const briefJson = lr?.payload_json && typeof lr.payload_json === 'object' ? JSON.parse(JSON.stringify(lr.payload_json)) : {};
+      await MissionRequirements.create({
+        mission_id: mission.id,
+        brief_json: briefJson,
+        source_lead_request_id: lead_request_id,
+        edited_by_user_id: req.user?.id || null,
+      });
     }
 
     const full = await Mission.findByPk(mission.id, {
@@ -405,6 +414,7 @@ router.get('/:id', requireInternalUser, async (req, res) => {
         { model: ProspectCompany, as: 'prospectCompany' },
         { model: Contact, as: 'primaryContact' },
         { model: LeadRequest, as: 'leadRequest' },
+        { model: MissionRequirements, as: 'missionRequirements' },
         { model: User, as: 'owner', attributes: ['id', 'name', 'preferred_name', 'email'] },
         { model: MissionArtifact, as: 'artifacts', include: [{ model: User, as: 'createdBy', attributes: ['id', 'name', 'preferred_name'] }] },
         { model: MissionActivity, as: 'activities', include: [{ model: User, as: 'createdBy', attributes: ['id', 'name', 'preferred_name'] }], order: [['created_at', 'DESC']], limit: 50 },
@@ -470,6 +480,42 @@ router.get('/:id', requireInternalUser, async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching mission:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * PATCH /api/abm/missions/:id/requirements
+ * Update the mission's working procurement brief (mission_requirements.brief_json).
+ * Does not touch the source lead_request.
+ */
+router.patch('/:id/requirements', requireInternalUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { brief_json } = req.body;
+    const mission = await Mission.findByPk(id);
+    if (!mission) return res.status(404).json({ message: 'Mission not found' });
+    if (brief_json === undefined || typeof brief_json !== 'object') {
+      return res.status(400).json({ message: 'brief_json object is required' });
+    }
+
+    let mr = await MissionRequirements.findOne({ where: { mission_id: id } });
+    if (mr) {
+      await mr.update({
+        brief_json: JSON.parse(JSON.stringify(brief_json)),
+        edited_by_user_id: req.user?.id || null,
+      });
+    } else {
+      mr = await MissionRequirements.create({
+        mission_id: id,
+        brief_json: JSON.parse(JSON.stringify(brief_json)),
+        source_lead_request_id: mission.lead_request_id || null,
+        edited_by_user_id: req.user?.id || null,
+      });
+    }
+    res.json(mr);
+  } catch (err) {
+    console.error('Error updating mission requirements:', err);
     res.status(500).json({ message: 'Server error' });
   }
 });

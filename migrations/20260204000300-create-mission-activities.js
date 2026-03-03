@@ -34,7 +34,6 @@ module.exports = {
       },
       created_at: { type: Sequelize.DATE, allowNull: false, defaultValue: Sequelize.fn('NOW') },
     });
-    await queryInterface.addIndex('mission_activities', ['mission_id']);
     await queryInterface.addIndex('mission_activities', ['mission_id', 'created_at']);
   },
 

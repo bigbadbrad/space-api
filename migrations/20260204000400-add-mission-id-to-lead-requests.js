@@ -14,7 +14,6 @@ module.exports = {
         onUpdate: 'CASCADE',
         onDelete: 'SET NULL',
       });
-      await queryInterface.addIndex('lead_requests', ['mission_id']);
     }
   },
 
