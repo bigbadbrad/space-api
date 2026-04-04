@@ -50,6 +50,10 @@ const PursuitTask = require('./pursuit_task');
 const PursuitActivity = require('./pursuit_activity');
 const EnrichmentJob = require('./enrichment_job');
 const EnrichmentSource = require('./enrichment_source');
+const Property = require('./property');
+const PublisherPost = require('./publisher_post');
+const PublisherSocialAccount = require('./publisher_social_account');
+const PublisherPublishAttempt = require('./publisher_publish_attempt');
 
 // -------------------------------------
 //  DEFINE MODEL RELATIONSHIPS
@@ -341,6 +345,14 @@ Pursuit.hasMany(EnrichmentJob, { foreignKey: 'triggered_by_pursuit_id', as: 'enr
 EnrichmentJob.hasMany(EnrichmentSource, { foreignKey: 'enrichment_job_id', as: 'sources' });
 EnrichmentSource.belongsTo(EnrichmentJob, { foreignKey: 'enrichment_job_id', as: 'enrichmentJob' });
 
+// Consumer GTM: Property -> PublisherPost, PublisherSocialAccount; PublisherPost -> PublisherPublishAttempt
+Property.hasMany(PublisherPost, { foreignKey: 'property_id', as: 'publisherPosts' });
+PublisherPost.belongsTo(Property, { foreignKey: 'property_id', as: 'property' });
+Property.hasMany(PublisherSocialAccount, { foreignKey: 'property_id', as: 'publisherSocialAccounts' });
+PublisherSocialAccount.belongsTo(Property, { foreignKey: 'property_id', as: 'property' });
+PublisherPost.hasMany(PublisherPublishAttempt, { foreignKey: 'post_id', as: 'publishAttempts' });
+PublisherPublishAttempt.belongsTo(PublisherPost, { foreignKey: 'post_id', as: 'post' });
+
 module.exports = {
   User,
   ApiKey,
@@ -393,4 +405,8 @@ module.exports = {
   PursuitActivity,
   EnrichmentJob,
   EnrichmentSource,
+  Property,
+  PublisherPost,
+  PublisherSocialAccount,
+  PublisherPublishAttempt,
 };

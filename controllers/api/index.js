@@ -11,6 +11,8 @@ const apiKeyRoutes = require("./apiKeyRoutes");
 const abmRoutes = require('./abmRoutes');
 const appRoutes = require('./appRoutes');
 const hooksRoutes = require('./hooksRoutes');
+const consumerRoutes = require('./consumer');
+const authRoutes = require('./authRoutes');
 
 // Legacy routes (keep if still needed)
 router.use("/users", userRoutes);
@@ -22,5 +24,7 @@ router.use('/keys', apiKeyRoutes);
 router.use("/abm", abmRoutes);
 router.use("/app", appRoutes);
 router.use("/hooks", hooksRoutes);
+router.use("/consumer", consumerRoutes);
+router.use("/auth", authRoutes);
 
 module.exports = router;
