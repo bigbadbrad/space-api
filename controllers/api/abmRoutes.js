@@ -1738,12 +1738,17 @@ router.get('/accounts/:id/people', requireInternalUser, async (req, res) => {
  * GET /api/abm/accounts/:id/people-activity
  * Contact-centric: one row per contact with all their activity (anonymous + known).
  * Each event includes identity: 'anonymous' | 'known' so the UI can show when they became known.
- * Query: range_days (default 7).
+ * Query: range_days — number of days (default 7), or "all" / "0" for full PostHog history (no time filter).
  */
 router.get('/accounts/:id/people-activity', requireInternalUser, async (req, res) => {
   try {
     const { id: accountId } = req.params;
-    const rangeDays = Math.min(30, Math.max(1, parseInt(req.query.range_days, 10) || 7));
+    const qRange = req.query.range_days;
+    const allTime =
+      qRange === 'all' ||
+      qRange === '0' ||
+      (typeof qRange === 'string' && qRange.toLowerCase() === 'all');
+    const rangeDays = allTime ? null : Math.min(365, Math.max(1, parseInt(qRange, 10) || 7));
     const prospect = await ProspectCompany.findByPk(accountId, { attributes: ['id', 'name', 'domain'] });
     if (!prospect) return res.status(404).json({ message: 'Account not found' });
 
@@ -1777,7 +1782,8 @@ router.get('/accounts/:id/people-activity', requireInternalUser, async (req, res
     const distinctIds = Array.from(allDistinctIds);
 
     const payload = {
-      range_days: rangeDays,
+      range_days: allTime ? null : rangeDays,
+      all_time: allTime,
       people: [],
       posthog_configured: !!(process.env.POSTHOG_HOST && (process.env.POSTHOG_PERSONAL_API_KEY || process.env.POSTHOG_PROJECT_API_KEY)),
     };
@@ -1801,9 +1807,24 @@ router.get('/accounts/:id/people-activity', requireInternalUser, async (req, res
 
     const IDENTIFY_BOUNDARY_EVENTS = ['$identify', 'identify', 'lead_request_submitted'];
 
+    const maxEventsPerPerson = allTime ? 500 : 100;
+    let posthogRange = '7d';
+    let fetchLimit = 500;
+    if (allTime) {
+      posthogRange = 'all';
+      fetchLimit = 5000;
+    } else if (rangeDays <= 7) {
+      posthogRange = '7d';
+    } else if (rangeDays <= 30) {
+      posthogRange = '30d';
+    } else if (rangeDays <= 90) {
+      posthogRange = '90d';
+    } else {
+      posthogRange = '365d';
+    }
+
     if (distinctIds.length > 0) {
-      const rangeStr = rangeDays <= 7 ? '7d' : '30d';
-      const rawEvents = await fetchEventsByDistinctIds(distinctIds, { range: rangeStr, limit: 500 });
+      const rawEvents = await fetchEventsByDistinctIds(distinctIds, { range: posthogRange, limit: fetchLimit });
 
       for (const e of rawEvents) {
         const did = String(e.distinct_id);
@@ -1815,7 +1836,7 @@ router.get('/accounts/:id/people-activity', requireInternalUser, async (req, res
           rec.last_seen_at = e.timestamp;
         }
         rec.event_counts[e.event] = (rec.event_counts[e.event] || 0) + 1;
-        if (rec.events.length < 100) {
+        if (rec.events.length < maxEventsPerPerson) {
           rec.events.push({
             event: e.event,
             event_display: e.event_display ?? e.event,

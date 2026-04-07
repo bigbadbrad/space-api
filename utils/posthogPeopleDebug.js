@@ -16,6 +16,8 @@ const RANGE_TO_MINUTES = {
   '24h': 24 * 60,
   '7d': 7 * 24 * 60,
   '30d': 30 * 24 * 60,
+  '90d': 90 * 24 * 60,
+  '365d': 365 * 24 * 60,
 };
 
 function pathFromUrl(url) {
@@ -346,9 +348,11 @@ async function fetchEventsByDistinctIds(distinctIds, opts = {}) {
   const apiKey = process.env.POSTHOG_PERSONAL_API_KEY || process.env.POSTHOG_PROJECT_API_KEY;
   if (!host || !apiKey || !distinctIds || distinctIds.length === 0) return [];
 
-  const minutes = RANGE_TO_MINUTES[range] || 24 * 60;
+  const allTime = range === 'all';
+  const minutes = allTime ? null : RANGE_TO_MINUTES[range] || 24 * 60;
   const idsList = distinctIds.slice(0, 25).map((id) => `'${String(id).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`);
   const inClause = idsList.length === 1 ? `distinct_id = ${idsList[0]}` : `in(distinct_id, [${idsList.join(', ')}])`;
+  const timeClause = allTime ? '' : `AND timestamp >= now() - INTERVAL ${minutes} MINUTE`;
 
   try {
     const res = await fetch(`${host.replace(/\/$/, '')}/api/projects/${projectId}/query/`, {
@@ -369,7 +373,7 @@ async function fetchEventsByDistinctIds(distinctIds, opts = {}) {
               properties.$event_type AS event_type
             FROM events
             WHERE ${inClause}
-              AND timestamp >= now() - INTERVAL ${minutes} MINUTE
+              ${timeClause}
             ORDER BY timestamp DESC
             LIMIT ${limit}
           `,
